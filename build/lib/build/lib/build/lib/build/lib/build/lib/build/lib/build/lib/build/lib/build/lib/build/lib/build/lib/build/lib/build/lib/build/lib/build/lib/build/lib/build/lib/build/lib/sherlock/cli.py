@@ -73,9 +73,10 @@ def get_node_global_path() -> str | None:
     return None
 
 
-def check_global_agent_installed() -> tuple[bool, str | None]:
-    """Check if global-agent is installed for Node.js proxy support.
+def check_node_proxy_deps() -> tuple[bool, str | None]:
+    """Check if required Node.js proxy dependencies are installed.
 
+    Checks for 'undici' (preferred) or 'global-agent'.
     Returns:
         Tuple of (is_installed, node_path)
     """
@@ -83,18 +84,36 @@ def check_global_agent_installed() -> tuple[bool, str | None]:
     if not node_path:
         return False, None
 
+    env = os.environ.copy()
+    env["NODE_PATH"] = node_path
+
+    # Check for undici first (preferred)
     try:
-        env = os.environ.copy()
-        env["NODE_PATH"] = node_path
+        result = subprocess.run(
+            ["node", "-e", "require('undici')"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+        if result.returncode == 0:
+            return True, node_path
+    except Exception:
+        pass
+
+    # Check for global-agent (fallback)
+    try:
         result = subprocess.run(
             ["node", "-e", "require('global-agent')"],
             capture_output=True,
             timeout=5,
             env=env,
         )
-        return result.returncode == 0, node_path
+        if result.returncode == 0:
+            return True, node_path
     except Exception:
-        return False, node_path
+        pass
+
+    return False, node_path
 
 
 def run_with_proxy(command: str, port: int, args: tuple, is_node_app: bool = False) -> None:
@@ -120,12 +139,21 @@ def run_with_proxy(command: str, port: int, args: tuple, is_node_app: bool = Fal
 
     # For Node.js apps, we need to inject proxy setup via a preload script
     if is_node_app:
+        # Check if we have the necessary dependencies
+        has_deps, node_path = check_node_proxy_deps()
+        if not has_deps:
+            click.echo(
+                "[Warning] Node.js proxy dependencies not found.\n"
+                "To proxy Node.js apps, please run:\n"
+                "  npm install -g undici\n",
+                err=True,
+            )
+
         # Find the bootstrap script (installed with sherlock package)
         bootstrap_script = Path(__file__).parent / "node_proxy_bootstrap.js"
 
         if bootstrap_script.exists():
             # Set NODE_PATH so global modules can be found
-            node_path = get_node_global_path()
             if node_path:
                 existing_node_path = env.get("NODE_PATH", "")
                 env["NODE_PATH"] = f"{node_path}:{existing_node_path}".rstrip(":")
@@ -203,6 +231,20 @@ def env(port: int):
 
 @main.command()
 @click.option("--port", "-p", default=DEFAULT_PROXY_PORT, help="Proxy port number")
+@click.option("--node", is_flag=True, help="Inject Node.js proxy configuration")
+@click.argument("command")
+@click.argument("args", nargs=-1)
+def run(port: int, node: bool, command: str, args: tuple):
+    """Run any command with proxy configured.
+
+    Example: sherlock run curl https://api.anthropic.com/v1/messages ...
+    Example: sherlock run --node my-node-script.js
+    """
+    run_with_proxy(command, port, args, is_node_app=node)
+
+
+@main.command()
+@click.option("--port", "-p", default=DEFAULT_PROXY_PORT, help="Proxy port number")
 @click.argument("args", nargs=-1)
 def claude(port: int, args: tuple):
     """Run Claude Code with proxy configured.
@@ -212,7 +254,7 @@ def claude(port: int, args: tuple):
 
     Example: sherlock claude --help
     """
-    run_with_proxy("claude", port, args)
+    run_with_proxy("claude", port, args, is_node_app=True)
 
 
 @main.command()
