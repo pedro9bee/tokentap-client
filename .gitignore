@@ -10,12 +10,45 @@ dist/
 build/
 eggs/
 .eggs/
+wheels/
+MANIFEST
+.installed.cfg
 
 # Virtual environments
 venv/
 .venv/
 ENV/
 env/
+.python-version
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+nosetests.xml
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# Documentation builds
+docs/_build/
+site/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
 
 # IDE
 .vscode/
