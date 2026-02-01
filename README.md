@@ -144,7 +144,7 @@ Options:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Terminal 1: tokentap start                                      │
+│  Terminal 1: tokentap start                                     │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  HTTP Proxy (localhost:8080)                                ││
 │  │  + Dashboard                                                ││
@@ -154,7 +154,7 @@ Options:
                                 │ HTTP
                                 │
 ┌───────────────────────────────┴─────────────────────────────────┐
-│  Terminal 2: tokentap claude                                     │
+│  Terminal 2: tokentap claude                                    │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  Sets ANTHROPIC_BASE_URL=http://localhost:8080              ││
 │  │  Runs: claude                                               ││
