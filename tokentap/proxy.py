@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Callable
 
 import aiohttp
+import certifi
 from aiohttp import web
 
 from tokentap.config import DEFAULT_PROXY_PORT, PROVIDERS
@@ -73,7 +74,7 @@ class ProxyServer:
         headers.pop("Host", None)
         headers.pop("Content-Length", None)
 
-        ssl_context = ssl.create_default_context()
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
 
         try:
             async with aiohttp.ClientSession() as session:

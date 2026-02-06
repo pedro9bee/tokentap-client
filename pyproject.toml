@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9.0",
+    "certifi",
     "rich>=13.0.0",
     "tiktoken>=0.5.0",
     "click>=8.0.0",
