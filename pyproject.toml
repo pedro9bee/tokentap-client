@@ -31,6 +31,7 @@ dependencies = [
     "certifi",
     "click>=8.0.0",
     "fastapi>=0.100.0",
+    "jsonpath-ng>=1.6.0",
     "motor>=3.3.0",
     "pydantic>=2.0.0",
     "rich>=13.0.0",
@@ -53,4 +54,4 @@ tokentap = "tokentap.cli:main"
 where = ["."]
 
 [tool.setuptools.package-data]
-tokentap = ["web/static/**/*"]
+tokentap = ["web/static/**/*", "providers.json"]

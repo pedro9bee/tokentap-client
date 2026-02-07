@@ -11,11 +11,13 @@ from mitmproxy.tools import dump
 
 from tokentap.config import DEFAULT_PROXY_PORT, PROVIDERS
 from tokentap.parser import count_tokens, parse_anthropic_request
+from tokentap.provider_config import get_provider_config
+from tokentap.generic_parser import GenericParser
 from tokentap.response_parser import parse_response, parse_sse_stream
 
 logger = logging.getLogger(__name__)
 
-# Domain → provider mapping for MITM interception
+# Domain → provider mapping for MITM interception (DEPRECATED: kept for backward compat)
 DOMAIN_TO_PROVIDER = {
     "api.anthropic.com": "anthropic",
     "api.openai.com": "openai",
@@ -35,11 +37,28 @@ class TokentapAddon:
         self,
         db=None,
         on_request: Callable[[dict], None] | None = None,
+        use_dynamic_config: bool = True,
     ):
         self.db = db
         self.on_request = on_request
-        # Per-flow data: start time, streaming chunks
+        self.use_dynamic_config = use_dynamic_config
+        # Per-flow data: start time, streaming chunks, provider info, context
         self._flow_data: dict[str, dict] = {}
+
+        # NEW: Dynamic provider configuration
+        if use_dynamic_config:
+            try:
+                self.provider_config = get_provider_config()
+                self.generic_parser = GenericParser(self.provider_config)
+                logger.info("Dynamic provider configuration loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load dynamic provider config: {e}")
+                logger.warning("Falling back to hardcoded providers")
+                self.provider_config = None
+                self.generic_parser = None
+        else:
+            self.provider_config = None
+            self.generic_parser = None
 
     def request(self, flow: http.HTTPFlow) -> None:
         """Intercept requests: health check, backward compat rewrite, start timer."""
@@ -76,22 +95,36 @@ class TokentapAddon:
                 )
                 return
 
-        # Detect provider for MITM interception
-        provider = DOMAIN_TO_PROVIDER.get(host)
-        if provider:
-            logger.info("Intercepting %s request: %s %s %s", provider, flow.request.method, host, path)
-            # DEBUG: Log headers for kiro
-            if provider == "kiro":
-                logger.debug("KIRO Request Headers: %s", dict(flow.request.headers))
+        # NEW: Dynamic provider detection
+        provider_info = None
+        provider_name = None
+
+        if self.provider_config:
+            provider_info = self.provider_config.get_provider_by_domain(host)
+            if provider_info:
+                provider_name = provider_info["provider_name"]
+                logger.info("Intercepting %s request: %s %s %s", provider_name, flow.request.method, host, path)
+            else:
+                logger.debug("No provider config for host: %s", host)
         else:
-            # Log all non-LLM requests to help identify new providers (like kiro/AWS)
-            logger.debug("Proxying unknown host: %s %s %s", flow.request.method, host, path)
+            # Fallback to hardcoded mapping
+            provider_name = DOMAIN_TO_PROVIDER.get(host)
+            if provider_name:
+                logger.info("Intercepting %s request (legacy): %s %s %s", provider_name, flow.request.method, host, path)
+            else:
+                logger.debug("Proxying unknown host: %s %s %s", flow.request.method, host, path)
+
+        # Extract context metadata from headers
+        context_metadata = self._extract_context_metadata(flow)
 
         # Start timer
         self._flow_data[flow.id] = {
             "start_time": time.monotonic(),
             "chunks": [],
             "is_streaming": False,
+            "provider_name": provider_name,
+            "provider_info": provider_info,
+            "context_metadata": context_metadata,
         }
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
@@ -99,9 +132,9 @@ class TokentapAddon:
         if flow.id not in self._flow_data:
             return
 
-        # Only process LLM provider domains
-        host = flow.request.host
-        if host not in DOMAIN_TO_PROVIDER:
+        fdata = self._flow_data[flow.id]
+        # Only process if we have a provider
+        if not fdata.get("provider_name"):
             return
 
         content_type = flow.response.headers.get("content-type", "")
@@ -121,7 +154,6 @@ class TokentapAddon:
         if is_sse or is_request_stream or is_eventstream:
             logger.debug("Streaming response detected for %s (SSE: %s, EventStream: %s, stream param: %s)",
                         flow.request.host, is_sse, is_eventstream, is_request_stream)
-            fdata = self._flow_data[flow.id]
             fdata["is_streaming"] = True
             fdata["stream_type"] = "eventstream" if is_eventstream else "sse"
 
@@ -139,13 +171,19 @@ class TokentapAddon:
         if fdata is None:
             return
 
-        host = flow.request.host
-        provider = DOMAIN_TO_PROVIDER.get(host)
-        if not provider:
+        provider_name = fdata.get("provider_name")
+        if not provider_name:
             return
 
+        provider_info = fdata.get("provider_info")
+        context_metadata = fdata.get("context_metadata", {})
+
+        host = flow.request.host
         duration_ms = int((time.monotonic() - fdata["start_time"]) * 1000)
         path = flow.request.path
+
+        # For backward compatibility
+        provider = provider_name
 
         # Filter out telemetry requests by header (Kiro-specific)
         if provider == "kiro":
@@ -176,7 +214,16 @@ class TokentapAddon:
             pass
 
         if body_dict:
-            request_parsed = self._parse_request_body(body_dict, provider)
+            # NEW: Try generic parser first
+            if self.generic_parser:
+                try:
+                    request_parsed = self.generic_parser.parse_request(provider_name, body_dict)
+                except Exception as e:
+                    logger.warning(f"Generic parser failed for {provider_name}: {e}")
+                    request_parsed = self._parse_request_body(body_dict, provider)
+            else:
+                # Fallback to legacy parser
+                request_parsed = self._parse_request_body(body_dict, provider)
 
         # Parse response for token usage
         is_streaming = fdata["is_streaming"]
@@ -203,7 +250,15 @@ class TokentapAddon:
                 }
                 response_data = None
             else:
-                usage = parse_sse_stream(provider, chunks)
+                # NEW: Try generic parser first
+                if self.generic_parser:
+                    try:
+                        usage = self.generic_parser.parse_response(provider_name, chunks, is_streaming=True)
+                    except Exception as e:
+                        logger.warning(f"Generic parser failed for streaming {provider_name}: {e}")
+                        usage = parse_sse_stream(provider, chunks)
+                else:
+                    usage = parse_sse_stream(provider, chunks)
                 response_data = None
         else:
             response_data = None
@@ -229,7 +284,15 @@ class TokentapAddon:
                 pass
 
             if response_data:
-                usage = parse_response(provider, response_data)
+                # NEW: Try generic parser first
+                if self.generic_parser:
+                    try:
+                        usage = self.generic_parser.parse_response(provider_name, response_data, is_streaming=False)
+                    except Exception as e:
+                        logger.warning(f"Generic parser failed for JSON {provider_name}: {e}")
+                        usage = parse_response(provider, response_data)
+                else:
+                    usage = parse_response(provider, response_data)
             else:
                 logger.warning("No response data to parse from %s", provider)
                 usage = {
@@ -254,6 +317,17 @@ class TokentapAddon:
         user_agent = flow.request.headers.get("user-agent", "unknown")
         client_type = self._detect_client_type(user_agent, host, provider)
 
+        # Calculate estimated cost
+        estimated_cost = 0.0
+        if provider_info and provider_info.get("metadata"):
+            metadata = provider_info["metadata"]
+            cost_per_input = metadata.get("cost_per_input_token", 0)
+            cost_per_output = metadata.get("cost_per_output_token", 0)
+            estimated_cost = (
+                usage.get("input_tokens", 0) * cost_per_input
+                + usage.get("output_tokens", 0) * cost_per_output
+            )
+
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
@@ -273,6 +347,15 @@ class TokentapAddon:
             "response_status": flow.response.status_code,
             "response_stop_reason": usage.get("stop_reason"),
             "streaming": is_streaming,
+            # NEW: Context metadata
+            "context": context_metadata,
+            "program": context_metadata.get("program_name"),
+            "project": context_metadata.get("project_name"),
+            # NEW: Provider metadata
+            "provider_tags": provider_info.get("metadata", {}).get("tags", []) if provider_info else [],
+            "estimated_cost": estimated_cost,
+            # NEW: Capture mode
+            "capture_mode": "capture_all" if provider_name == "unknown" else "known",
         }
 
         logger.info(
@@ -302,18 +385,70 @@ class TokentapAddon:
         # Write to MongoDB
         if self.db:
             db_event = {**event}
-            if body_dict:
-                db_event["raw_request"] = body_dict
-            if response_data:
-                db_event["raw_response"] = response_data
+
+            # NEW: Capture full raw data for unknown providers or if configured
+            should_capture_full = (
+                provider_name == "unknown"
+                or (provider_info and provider_info.get("capture_full_request"))
+                or (self.provider_config and self.provider_config.capture_mode == "capture_all")
+            )
+
+            if should_capture_full:
+                if body_dict:
+                    db_event["raw_request"] = body_dict
+                if response_data:
+                    db_event["raw_response"] = response_data
+                logger.debug(f"Captured full request/response for {provider_name}")
+
             try:
                 await self.db.insert_event(db_event)
             except Exception:
                 logger.exception("Failed to write event to MongoDB")
 
     # -------------------------------------------------------------------------
-    # Request parsing helpers (same logic as before)
+    # Context and parsing helpers
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_context_metadata(flow: http.HTTPFlow) -> dict:
+        """Extract calling program and project context from headers/environment.
+
+        Looks for custom headers:
+        - X-Tokentap-Program: Program name
+        - X-Tokentap-Project: Project name
+        - X-Tokentap-Context: Full JSON context
+
+        Returns:
+            Dict with program_name, project_name, session_id, tags, custom fields
+        """
+        context = {
+            "program_name": flow.request.headers.get("X-Tokentap-Program"),
+            "project_name": flow.request.headers.get("X-Tokentap-Project"),
+            "session_id": flow.request.headers.get("X-Tokentap-Session"),
+            "tags": [],
+            "custom": {},
+        }
+
+        # Parse full context from X-Tokentap-Context header (JSON)
+        context_header = flow.request.headers.get("X-Tokentap-Context")
+        if context_header:
+            try:
+                custom_context = json.loads(context_header)
+                # Merge custom context, preserving existing non-None values
+                for key, value in custom_context.items():
+                    if key in context and context[key] is None:
+                        context[key] = value
+                    elif key not in context:
+                        context["custom"][key] = value
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse X-Tokentap-Context header")
+
+        # Try to infer from User-Agent if not provided
+        if not context["program_name"]:
+            ua = flow.request.headers.get("user-agent", "")
+            context["program_name"] = TokentapAddon._detect_client_type(ua, flow.request.host, "")
+
+        return context
 
     @staticmethod
     def _detect_client_type(user_agent: str, host: str, provider: str) -> str:

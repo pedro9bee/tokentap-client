@@ -127,9 +127,12 @@ def main(ctx):
 
 @main.command()
 @click.option("--build", "do_build", is_flag=True, default=True, help="Rebuild images")
-def up(do_build):
+@click.option("--no-detach", "no_detach", is_flag=True, default=False, help="Run in foreground (for systemd)")
+def up(do_build, no_detach):
     """Start tokentap services (proxy + web dashboard + MongoDB)."""
-    cmd = _docker_compose_cmd() + ["up", "-d"]
+    cmd = _docker_compose_cmd() + ["up"]
+    if not no_detach:
+        cmd.append("-d")
     if do_build:
         cmd.append("--build")
 
@@ -408,6 +411,111 @@ def install_cert():
     else:
         console.print(f"[yellow]Unsupported platform: {system}[/yellow]")
         console.print(f"[dim]Manually trust the certificate at: {cert_path}[/dim]")
+
+
+# =============================================================================
+# Service Management
+# =============================================================================
+
+@main.group()
+def service():
+    """Manage tokentap service (auto-start on boot)."""
+    pass
+
+
+@service.command()
+def enable():
+    """Enable auto-start on boot."""
+    script_path = Path(__file__).parent.parent / "scripts" / "service-manager.sh"
+    if not script_path.exists():
+        console.print(f"[red]Service manager script not found: {script_path}[/red]")
+        sys.exit(1)
+
+    result = subprocess.run([str(script_path), "enable"])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+@service.command()
+def disable():
+    """Disable auto-start on boot."""
+    script_path = Path(__file__).parent.parent / "scripts" / "service-manager.sh"
+    if not script_path.exists():
+        console.print(f"[red]Service manager script not found: {script_path}[/red]")
+        sys.exit(1)
+
+    result = subprocess.run([str(script_path), "disable"])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+@service.command()
+def restart():
+    """Restart the service."""
+    script_path = Path(__file__).parent.parent / "scripts" / "service-manager.sh"
+    if not script_path.exists():
+        console.print(f"[red]Service manager script not found: {script_path}[/red]")
+        sys.exit(1)
+
+    result = subprocess.run([str(script_path), "restart"])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+@service.command(name="status")
+def service_status():
+    """Show detailed service status."""
+    script_path = Path(__file__).parent.parent / "scripts" / "service-manager.sh"
+    if not script_path.exists():
+        console.print(f"[red]Service manager script not found: {script_path}[/red]")
+        sys.exit(1)
+
+    result = subprocess.run([str(script_path), "status"])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+@main.command(name="reload-config")
+def reload_config():
+    """Reload provider configuration without restart.
+
+    Sends SIGHUP signal to proxy container to reload providers.json.
+    """
+    console.print("[cyan]Reloading provider configuration...[/cyan]")
+
+    # Send HUP signal to proxy container
+    result = subprocess.run(
+        ["docker", "kill", "-s", "HUP", "tokentap-client-proxy-1"],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode == 0:
+        console.print("[green]✓ Configuration reloaded[/green]")
+    else:
+        # Try alternate container name pattern
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "name=proxy", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            container_name = result.stdout.strip().split()[0]
+            result2 = subprocess.run(
+                ["docker", "kill", "-s", "HUP", container_name],
+                capture_output=True,
+                text=True
+            )
+            if result2.returncode == 0:
+                console.print("[green]✓ Configuration reloaded[/green]")
+            else:
+                console.print("[red]Failed to reload configuration[/red]")
+                console.print("[dim]Proxy container may not be running. Run 'tokentap status' to check.[/dim]")
+                sys.exit(1)
+        else:
+            console.print("[red]Failed to reload configuration[/red]")
+            console.print("[dim]Proxy container not found. Run 'tokentap status' to check.[/dim]")
+            sys.exit(1)
 
 
 # =============================================================================

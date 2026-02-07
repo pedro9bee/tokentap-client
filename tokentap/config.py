@@ -45,6 +45,9 @@ MITMPROXY_CA_DIR = Path.home() / ".mitmproxy"
 MITMPROXY_CA_CERT = MITMPROXY_CA_DIR / "mitmproxy-ca-cert.pem"
 NO_PROXY = "localhost,127.0.0.1"
 
+# Provider configuration
+DEFAULT_PROVIDERS_PATH = Path(__file__).parent / "providers.json"
+
 # Shell integration marker
 SHELL_INTEGRATION_START = "# >>> tokentap shell integration >>>"
 SHELL_INTEGRATION_END = "# <<< tokentap shell integration <<<"

@@ -31,6 +31,11 @@ class MongoEventStore:
         await self.collection.create_index("timestamp")
         await self.collection.create_index([("provider", 1), ("timestamp", -1)])
         await self.collection.create_index([("model", 1), ("timestamp", -1)])
+        # NEW: Indexes for context metadata
+        await self.collection.create_index("context.program_name")
+        await self.collection.create_index("context.project_name")
+        await self.collection.create_index([("program", 1), ("timestamp", -1)])
+        await self.collection.create_index([("project", 1), ("timestamp", -1)])
         self._indexes_created = True
 
     async def insert_event(self, event: dict) -> None:
@@ -187,6 +192,86 @@ class MongoEventStore:
         except Exception:
             return False
 
+    async def usage_by_program(self, filters: dict | None = None) -> list[dict]:
+        """Aggregate usage by program/application.
+
+        Args:
+            filters: Optional filters (provider, model, date_from, date_to)
+
+        Returns:
+            List of usage stats grouped by program
+        """
+        query = self._build_query(filters)
+        pipeline = [
+            {"$match": query},
+            {
+                "$group": {
+                    "_id": "$program",
+                    "total_input_tokens": {"$sum": "$input_tokens"},
+                    "total_output_tokens": {"$sum": "$output_tokens"},
+                    "total_tokens": {"$sum": "$total_tokens"},
+                    "cache_creation_tokens": {"$sum": "$cache_creation_tokens"},
+                    "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                    "request_count": {"$sum": 1},
+                    "estimated_cost": {"$sum": "$estimated_cost"},
+                }
+            },
+            {"$sort": {"total_input_tokens": -1}},
+        ]
+        results = []
+        async for doc in self.collection.aggregate(pipeline):
+            results.append({
+                "program": doc["_id"] or "unknown",
+                "total_input_tokens": doc["total_input_tokens"],
+                "total_output_tokens": doc["total_output_tokens"],
+                "total_tokens": doc["total_tokens"],
+                "cache_creation_tokens": doc["cache_creation_tokens"],
+                "cache_read_tokens": doc["cache_read_tokens"],
+                "request_count": doc["request_count"],
+                "estimated_cost": doc.get("estimated_cost", 0.0),
+            })
+        return results
+
+    async def usage_by_project(self, filters: dict | None = None) -> list[dict]:
+        """Aggregate usage by project/workspace.
+
+        Args:
+            filters: Optional filters (provider, model, date_from, date_to)
+
+        Returns:
+            List of usage stats grouped by project
+        """
+        query = self._build_query(filters)
+        pipeline = [
+            {"$match": query},
+            {
+                "$group": {
+                    "_id": "$project",
+                    "total_input_tokens": {"$sum": "$input_tokens"},
+                    "total_output_tokens": {"$sum": "$output_tokens"},
+                    "total_tokens": {"$sum": "$total_tokens"},
+                    "cache_creation_tokens": {"$sum": "$cache_creation_tokens"},
+                    "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                    "request_count": {"$sum": 1},
+                    "estimated_cost": {"$sum": "$estimated_cost"},
+                }
+            },
+            {"$sort": {"total_input_tokens": -1}},
+        ]
+        results = []
+        async for doc in self.collection.aggregate(pipeline):
+            results.append({
+                "project": doc["_id"] or "unknown",
+                "total_input_tokens": doc["total_input_tokens"],
+                "total_output_tokens": doc["total_output_tokens"],
+                "total_tokens": doc["total_tokens"],
+                "cache_creation_tokens": doc["cache_creation_tokens"],
+                "cache_read_tokens": doc["cache_read_tokens"],
+                "request_count": doc["request_count"],
+                "estimated_cost": doc.get("estimated_cost", 0.0),
+            })
+        return results
+
     def _build_query(self, filters: dict | None) -> dict:
         """Build a MongoDB query from filter parameters."""
         if not filters:
@@ -196,6 +281,13 @@ class MongoEventStore:
             query["provider"] = filters["provider"]
         if "model" in filters:
             query["model"] = filters["model"]
+        # NEW: Context filters
+        if "program" in filters:
+            query["program"] = filters["program"]
+        if "project" in filters:
+            query["project"] = filters["project"]
+        if "capture_mode" in filters:
+            query["capture_mode"] = filters["capture_mode"]
         if "date_from" in filters or "date_to" in filters:
             ts_query: dict[str, Any] = {}
             if "date_from" in filters:

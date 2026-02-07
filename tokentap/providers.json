@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "description": "Dynamic provider configuration for tokentap. User overrides can be placed in ~/.tokentap/providers.json",
+  "capture_mode": "known_only",
+
+  "providers": {
+    "anthropic": {
+      "name": "Anthropic (Claude)",
+      "enabled": true,
+      "domains": ["api.anthropic.com"],
+      "api_patterns": ["/v1/messages", "/v1/complete"],
+
+      "request": {
+        "model_path": "$.model",
+        "messages_path": "$.messages[*]",
+        "system_path": "$.system",
+        "stream_param_path": "$.stream",
+        "text_fields": ["$.messages[*].content", "$.system"]
+      },
+
+      "response": {
+        "json": {
+          "input_tokens_path": "$.usage.input_tokens",
+          "output_tokens_path": "$.usage.output_tokens",
+          "cache_creation_tokens_path": "$.usage.cache_creation_input_tokens",
+          "cache_read_tokens_path": "$.usage.cache_read_input_tokens",
+          "model_path": "$.model",
+          "stop_reason_path": "$.stop_reason"
+        },
+        "sse": {
+          "event_types": ["message_start", "message_delta", "message_stop"],
+          "input_tokens_event": "message_start",
+          "input_tokens_path": "$.message.usage.input_tokens",
+          "cache_creation_tokens_event": "message_start",
+          "cache_creation_tokens_path": "$.message.usage.cache_creation_input_tokens",
+          "cache_read_tokens_event": "message_start",
+          "cache_read_tokens_path": "$.message.usage.cache_read_input_tokens",
+          "output_tokens_event": "message_delta",
+          "output_tokens_path": "$.usage.output_tokens",
+          "model_event": "message_start",
+          "model_path": "$.message.model",
+          "stop_reason_event": "message_delta",
+          "stop_reason_path": "$.delta.stop_reason"
+        }
+      },
+
+      "metadata": {
+        "tags": ["llm", "chat", "claude"],
+        "cost_per_input_token": 0.000003,
+        "cost_per_output_token": 0.000015
+      }
+    },
+
+    "openai": {
+      "name": "OpenAI",
+      "enabled": true,
+      "domains": ["api.openai.com"],
+      "api_patterns": ["/v1/chat/completions", "/v1/completions"],
+
+      "request": {
+        "model_path": "$.model",
+        "messages_path": "$.messages[*]",
+        "stream_param_path": "$.stream",
+        "text_fields": ["$.messages[*].content"]
+      },
+
+      "response": {
+        "json": {
+          "input_tokens_path": "$.usage.prompt_tokens",
+          "output_tokens_path": "$.usage.completion_tokens",
+          "model_path": "$.model",
+          "stop_reason_path": "$.choices[0].finish_reason"
+        },
+        "sse": {
+          "event_types": ["*"],
+          "done_marker": "[DONE]",
+          "input_tokens_path": "$.usage.prompt_tokens",
+          "output_tokens_path": "$.usage.completion_tokens",
+          "model_path": "$.model",
+          "stop_reason_path": "$.choices[0].finish_reason"
+        }
+      },
+
+      "metadata": {
+        "tags": ["llm", "chat", "openai"],
+        "cost_per_input_token": 0.0000015,
+        "cost_per_output_token": 0.000002
+      }
+    },
+
+    "gemini": {
+      "name": "Google Gemini",
+      "enabled": true,
+      "domains": ["generativelanguage.googleapis.com"],
+      "api_patterns": ["/v1/models/", "/v1beta/models/"],
+
+      "request": {
+        "model_path": "$.model",
+        "messages_path": "$.contents[*]",
+        "text_fields": ["$.contents[*].parts[*].text"]
+      },
+
+      "response": {
+        "json": {
+          "input_tokens_path": "$.usageMetadata.promptTokenCount",
+          "output_tokens_path": "$.usageMetadata.candidatesTokenCount",
+          "cache_read_tokens_path": "$.usageMetadata.cachedContentTokenCount",
+          "stop_reason_path": "$.candidates[0].finishReason"
+        },
+        "sse": {
+          "event_types": ["*"],
+          "format": "json_lines",
+          "use_last_chunk": true,
+          "input_tokens_path": "$.usageMetadata.promptTokenCount",
+          "output_tokens_path": "$.usageMetadata.candidatesTokenCount",
+          "cache_read_tokens_path": "$.usageMetadata.cachedContentTokenCount",
+          "stop_reason_path": "$.candidates[0].finishReason"
+        }
+      },
+
+      "metadata": {
+        "tags": ["llm", "chat", "gemini"],
+        "cost_per_input_token": 0.000001,
+        "cost_per_output_token": 0.000002
+      }
+    },
+
+    "kiro": {
+      "name": "Amazon Q (Kiro)",
+      "enabled": true,
+      "domains": [
+        "q.us-east-1.amazonaws.com",
+        "q.us-west-2.amazonaws.com",
+        "q.eu-west-1.amazonaws.com",
+        "q.ap-southeast-1.amazonaws.com"
+      ],
+      "api_patterns": ["/v1/", "/api/"],
+
+      "request": {
+        "model_path": "$.model",
+        "messages_path": "$.messages[*]",
+        "text_fields": ["$.messages[*].content"]
+      },
+
+      "response": {
+        "json": {
+          "input_tokens_path": "$.usage.inputTokens",
+          "input_tokens_path_alt": ["$.usage.input_tokens", "$.usage.promptTokens"],
+          "output_tokens_path": "$.usage.outputTokens",
+          "output_tokens_path_alt": ["$.usage.output_tokens", "$.usage.completionTokens"],
+          "model_path": "$.model",
+          "stop_reason_path": "$.stopReason",
+          "stop_reason_path_alt": ["$.stop_reason"]
+        },
+        "sse": {
+          "event_types": ["*"],
+          "format": "sse_or_json_lines",
+          "input_tokens_path": "$.usage.inputTokens",
+          "input_tokens_path_alt": ["$.usage.input_tokens", "$.usage.promptTokens"],
+          "output_tokens_path": "$.usage.outputTokens",
+          "output_tokens_path_alt": ["$.usage.output_tokens", "$.usage.completionTokens"],
+          "model_path": "$.model",
+          "stop_reason_path": "$.stopReason",
+          "stop_reason_path_alt": ["$.stop_reason"]
+        }
+      },
+
+      "metadata": {
+        "tags": ["llm", "chat", "amazon-q", "aws"],
+        "cost_per_input_token": 0.000001,
+        "cost_per_output_token": 0.000002
+      }
+    },
+
+    "unknown": {
+      "name": "Unknown Provider (Capture All)",
+      "enabled": true,
+      "domains": ["*"],
+      "capture_full_request": true,
+      "capture_full_response": true,
+      "log_level": "debug",
+
+      "request": {
+        "model_path": "$.model",
+        "messages_path": "$.messages[*]",
+        "text_fields": ["$.messages[*].content", "$.prompt"]
+      },
+
+      "response": {
+        "json": {
+          "input_tokens_path": "$.usage.input_tokens",
+          "input_tokens_path_alt": ["$.usage.prompt_tokens", "$.usage.inputTokens"],
+          "output_tokens_path": "$.usage.output_tokens",
+          "output_tokens_path_alt": ["$.usage.completion_tokens", "$.usage.outputTokens"],
+          "model_path": "$.model"
+        },
+        "sse": {
+          "event_types": ["*"],
+          "format": "sse_or_json_lines",
+          "input_tokens_path": "$.usage.input_tokens",
+          "output_tokens_path": "$.usage.output_tokens"
+        }
+      },
+
+      "metadata": {
+        "tags": ["unknown", "experimental"]
+      }
+    }
+  }
+}
