@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tokentap Dashboard</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</head>
+<body>
+  <div class="container" x-data="dashboard">
+
+    <!-- Loading bar -->
+    <div x-show="loading" class="loading-bar"></div>
+
+    <!-- Header -->
+    <header>
+      <h1>TOKENTAP <span>LLM Token Dashboard</span></h1>
+    </header>
+
+    <!-- Error -->
+    <div x-show="error" class="error-msg" x-text="error"></div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab-btn" :class="{ active: tab === 'overview' }" @click="tab = 'overview'">Dashboard</button>
+      <button class="tab-btn" :class="{ active: tab === 'events' }" @click="tab = 'events'">Event Log</button>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters">
+      <div class="filter-group">
+        <label>Provider</label>
+        <select x-model="filterProvider">
+          <option value="">All</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Model</label>
+        <input type="text" x-model="filterModel" placeholder="e.g. claude-sonnet-4-...">
+      </div>
+      <div class="filter-group">
+        <label>From</label>
+        <input type="datetime-local" x-model="filterDateFrom">
+      </div>
+      <div class="filter-group">
+        <label>To</label>
+        <input type="datetime-local" x-model="filterDateTo">
+      </div>
+      <button class="btn btn-primary" @click="applyFilters()">Apply</button>
+      <button class="btn" @click="clearFilters()">Clear</button>
+    </div>
+
+    <!-- ===== OVERVIEW TAB ===== -->
+    <div x-show="tab === 'overview'">
+
+      <!-- Stats cards -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="label">Input Tokens</div>
+          <div class="value primary" x-text="formatNumber(summary.total_input_tokens)"></div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Output Tokens</div>
+          <div class="value accent" x-text="formatNumber(summary.total_output_tokens)"></div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Total Requests</div>
+          <div class="value" x-text="formatNumber(summary.request_count)"></div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Avg Tokens / Request</div>
+          <div class="value" x-text="formatNumber(avgTokens)"></div>
+        </div>
+      </div>
+
+      <!-- Usage over time chart -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <h3>Token Usage Over Time</h3>
+          <div class="granularity-btns">
+            <button :class="{ active: granularity === 'hour' }" @click="changeGranularity('hour')">Hour</button>
+            <button :class="{ active: granularity === 'day' }" @click="changeGranularity('day')">Day</button>
+            <button :class="{ active: granularity === 'week' }" @click="changeGranularity('week')">Week</button>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="usageChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Usage by model table -->
+      <div class="table-container">
+        <div class="title">Usage by Model</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Model</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Cache Created</th>
+              <th>Cache Read</th>
+              <th>Requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="row in byModel" :key="row.provider + row.model">
+              <tr>
+                <td><span class="badge" :class="row.provider" x-text="row.provider"></span></td>
+                <td x-text="shortModel(row.model)"></td>
+                <td x-text="formatNumber(row.input_tokens)"></td>
+                <td x-text="formatNumber(row.output_tokens)"></td>
+                <td x-text="formatNumber(row.cache_creation_tokens)"></td>
+                <td x-text="formatNumber(row.cache_read_tokens)"></td>
+                <td x-text="formatNumber(row.request_count)"></td>
+              </tr>
+            </template>
+            <template x-if="byModel.length === 0">
+              <tr><td colspan="7" style="text-align:center;color:var(--text-dim);">No data yet</td></tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ===== EVENTS TAB ===== -->
+    <div x-show="tab === 'events'">
+      <div class="table-container">
+        <div class="title">Request Log</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Provider</th>
+              <th>Model</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>Duration</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="ev in events" :key="ev._id">
+              <tr class="clickable" @click="showEventDetail(ev._id)">
+                <td x-text="formatTime(ev.timestamp)"></td>
+                <td><span class="badge" :class="ev.provider" x-text="ev.provider"></span></td>
+                <td x-text="shortModel(ev.model)"></td>
+                <td x-text="formatNumber(ev.input_tokens)"></td>
+                <td x-text="formatNumber(ev.output_tokens)"></td>
+                <td x-text="(ev.duration_ms || 0) + 'ms'"></td>
+                <td x-text="ev.response_status || '-'"></td>
+              </tr>
+            </template>
+            <template x-if="events.length === 0">
+              <tr><td colspan="7" style="text-align:center;color:var(--text-dim);">No events yet</td></tr>
+            </template>
+          </tbody>
+        </table>
+        <div class="pagination">
+          <span x-text="`Showing ${eventsPage * eventsLimit + 1}-${Math.min((eventsPage + 1) * eventsLimit, eventsTotal)} of ${eventsTotal}`"></span>
+          <div>
+            <button class="btn" @click="prevPage()" :disabled="eventsPage === 0">Prev</button>
+            <button class="btn" @click="nextPage()" :disabled="eventsPage >= totalPages - 1">Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== EVENT DETAIL MODAL ===== -->
+    <div x-show="selectedEvent" class="modal-overlay" @click.self="closeDetail()">
+      <div class="modal" x-show="selectedEvent">
+        <h3>
+          Event Detail
+          <button class="close-btn" @click="closeDetail()">&times;</button>
+        </h3>
+        <template x-if="selectedEvent">
+          <div>
+            <div class="detail-grid">
+              <div class="detail-item">
+                <div class="label">Timestamp</div>
+                <div class="value" x-text="formatTime(selectedEvent.timestamp)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Provider</div>
+                <div class="value" x-text="selectedEvent.provider"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Model</div>
+                <div class="value" x-text="selectedEvent.model"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Duration</div>
+                <div class="value" x-text="(selectedEvent.duration_ms || 0) + 'ms'"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Input Tokens</div>
+                <div class="value" x-text="formatNumber(selectedEvent.input_tokens)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Output Tokens</div>
+                <div class="value" x-text="formatNumber(selectedEvent.output_tokens)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Cache Created</div>
+                <div class="value" x-text="formatNumber(selectedEvent.cache_creation_tokens)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Cache Read</div>
+                <div class="value" x-text="formatNumber(selectedEvent.cache_read_tokens)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Status</div>
+                <div class="value" x-text="selectedEvent.response_status"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Stop Reason</div>
+                <div class="value" x-text="selectedEvent.response_stop_reason || '-'"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Streaming</div>
+                <div class="value" x-text="selectedEvent.streaming ? 'Yes' : 'No'"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Path</div>
+                <div class="value" x-text="selectedEvent.path"></div>
+              </div>
+            </div>
+
+            <template x-if="selectedEvent.messages && selectedEvent.messages.length > 0">
+              <div>
+                <h4 style="margin:1rem 0 0.5rem;">Messages</h4>
+                <template x-for="(msg, i) in selectedEvent.messages" :key="i">
+                  <div style="margin-bottom:0.5rem;">
+                    <span class="badge" :class="msg.role === 'user' ? 'anthropic' : 'openai'" x-text="msg.role"></span>
+                    <pre style="margin-top:0.25rem;" x-text="msg.content"></pre>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="selectedEvent.raw_request">
+              <div>
+                <h4 style="margin:1rem 0 0.5rem;">Raw Request</h4>
+                <pre x-text="JSON.stringify(selectedEvent.raw_request, null, 2)"></pre>
+              </div>
+            </template>
+
+            <template x-if="selectedEvent.raw_response">
+              <div>
+                <h4 style="margin:1rem 0 0.5rem;">Raw Response</h4>
+                <pre x-text="JSON.stringify(selectedEvent.raw_response, null, 2)"></pre>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

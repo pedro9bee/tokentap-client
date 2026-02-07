@@ -1,43 +1,36 @@
 <p align="center">
-  <h1 align="center">Tokentap (formerly Sherlock)</h1>
+  <h1 align="center">Tokentap</h1>
   <p align="center">
-    <strong>Token Tracker for LLM CLI Tools</strong>
+    <strong>Track LLM token usage across Claude Code, Codex, Gemini CLI, and more</strong>
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform">
     <img src="https://img.shields.io/badge/Claude_Code-supported-blueviolet.svg" alt="Claude Code">
-    <img src="https://img.shields.io/badge/Gemini_CLI-supported-blue.svg" alt="Gemini">
     <img src="https://img.shields.io/badge/Codex-supported-green.svg" alt="Codex">
-  </p>
-  <p align="center">
-    <a href="#installation">Installation</a> •
-    <a href="#quick-start">Quick Start</a> •
-    <a href="#features">Features</a> •
-    <a href="#commands">Commands</a> •
-    <a href="#contributing">Contributing</a>
+    <img src="https://img.shields.io/badge/Gemini_CLI-supported-blue.svg" alt="Gemini">
   </p>
 </p>
 
 ---
 
-tokentap tracks token usage for LLM CLI tools with a live terminal dashboard. See exactly how many tokens you're using in real-time.
+Tokentap runs a MITM proxy that transparently intercepts HTTPS traffic to LLM APIs, captures token usage from every request/response, and shows it all on a web dashboard. Works with **any** CLI tool that respects `HTTPS_PROXY` -- no per-tool configuration needed.
 
-## Why tokentap?
+## Quick Start (step by step)
 
-- **Track Token Usage**: See exactly how many tokens each request consumes
-- **Monitor Context Windows**: Visual fuel gauge shows cumulative usage against your limit
-- **Debug Prompts**: Automatically saves every prompt as markdown and JSON for review
-- **Zero Configuration**: No certificates, no setup - just install and go
+### Prerequisites
 
-## Installation
+- Python 3.10+
+- Docker
+
+### 1. Install tokentap
 
 ```bash
 pip install tokentap
 ```
 
-Or install from source:
+Or from source:
 
 ```bash
 git clone https://github.com/jmuncor/tokentap.git
@@ -45,166 +38,135 @@ cd tokentap
 pip install -e .
 ```
 
-### Requirements
-
-- Python 3.10+
-
-## Quick Start
-
-### Terminal 1: Start the Dashboard
+### 2. Start the services
 
 ```bash
-tokentap start
+tokentap up
 ```
 
-You'll be prompted to choose where to save captured prompts, then the dashboard appears:
+This starts three Docker containers: the mitmproxy proxy (port 8080), MongoDB, and the web dashboard (port 3000). It also copies the mitmproxy CA certificate to `~/.mitmproxy/`.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TOKENTAP - LLM Traffic Inspector                           │
-├─────────────────────────────────────────────────────────────┤
-│  Context Usage  ████████████░░░░░░░░░░░░░░░░  42%           │
-│                 (84,231 / 200,000 tokens)                   │
-├─────────────────────────────────────────────────────────────┤
-│  Time     Provider    Model                      Tokens     │
-│  14:23:01 Anthropic   claude-sonnet-4-20250514   12,847     │
-│  14:23:45 Anthropic   claude-sonnet-4-20250514   8,234      │
-│  14:24:12 Anthropic   claude-sonnet-4-20250514   15,102     │
-├─────────────────────────────────────────────────────────────┤
-│  Last Prompt: "Can you help me refactor this function..."   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Terminal 2: Run Your LLM Tool
+### 3. Configure your shell
 
 ```bash
-# For Claude Code
-tokentap claude
-
-# For Gemini CLI (see known issues)
-tokentap gemini
-
-# For OpenAI Codex
-tokentap codex
+tokentap install
 ```
 
-That's it! Watch the dashboard update in real-time as you work.
+This adds `eval "$(tokentap shell-init)"` to your `~/.zshrc` (or `~/.bashrc`), which exports:
 
-## Features
+| Variable | Value |
+|----------|-------|
+| `HTTPS_PROXY` | `http://127.0.0.1:8080` |
+| `HTTP_PROXY` | `http://127.0.0.1:8080` |
+| `NO_PROXY` | `localhost,127.0.0.1` |
+| `NODE_EXTRA_CA_CERTS` | `~/.mitmproxy/mitmproxy-ca-cert.pem` |
+| `SSL_CERT_FILE` | `~/.mitmproxy/mitmproxy-ca-cert.pem` |
+| `REQUESTS_CA_BUNDLE` | `~/.mitmproxy/mitmproxy-ca-cert.pem` |
 
-### Live Terminal Dashboard
+Reload your shell:
 
-Real-time token tracking with color-coded fuel gauge:
-- Green: < 50% of limit
-- Yellow: 50-80% of limit
-- Red: > 80% of limit
+```bash
+source ~/.zshrc   # or ~/.bashrc
+```
 
-### Prompt Archive
+### 4. (Optional) Trust the CA system-wide
 
-Every intercepted request is saved to your chosen directory:
-- **Markdown** - Human-readable format with metadata
-- **JSON** - Raw API request body for debugging
+If your tools don't respect `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`:
 
-### Session Summary
+```bash
+tokentap install-cert
+```
 
-When you exit, see your total usage:
+This adds the mitmproxy CA to the macOS system keychain (or Linux ca-certificates).
+
+### 5. Use your LLM tools normally
+
+```bash
+claude          # Claude Code
+codex           # OpenAI Codex
+gemini          # Gemini CLI
+```
+
+All HTTPS traffic to `api.anthropic.com`, `api.openai.com`, and `generativelanguage.googleapis.com` is automatically intercepted, parsed for token usage, and stored in MongoDB.
+
+### 6. View the dashboard
+
+```bash
+tokentap open
+```
+
+Opens `http://127.0.0.1:3000` in your browser -- live stats, per-model breakdowns, and full event log.
+
+## How It Works
 
 ```
-Session complete. Total: 84,231 tokens across 12 requests.
+Claude Code / Codex / Gemini CLI / any tool
+    | HTTPS_PROXY=http://127.0.0.1:8080
+    v
+mitmproxy (port 8080)
+    | Decrypts HTTPS, detects provider by domain
+    | TokentapAddon parses tokens, writes to MongoDB
+    v
+Upstream API (api.anthropic.com, api.openai.com, etc.)
+
+MongoDB <--- Web Dashboard (port 3000)
 ```
+
+Tokentap uses **mitmproxy** in regular HTTP proxy mode. When a CLI tool connects through `HTTPS_PROXY`, mitmproxy performs a man-in-the-middle on the TLS connection using its own CA certificate, allowing it to read the request and response in plaintext. Token usage is extracted from:
+
+- **Anthropic**: `message_start` / `message_delta` SSE events, or `usage` in JSON response
+- **OpenAI**: `usage` field in response or streaming chunks
+- **Gemini**: `usageMetadata` field
+
+Non-LLM traffic (any domain not in the intercept list) passes through the proxy untouched.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `tokentap start` | Start the proxy and dashboard |
-| `tokentap claude` | Run Claude Code with proxy configured |
-| `tokentap gemini` | Run Gemini CLI with proxy configured |
-| `tokentap codex` | Run OpenAI Codex CLI with proxy configured |
-| `tokentap run --provider <name> <cmd>` | Run any command with proxy configured |
+| `tokentap up` | Start proxy + web dashboard + MongoDB (Docker) |
+| `tokentap down` | Stop all services |
+| `tokentap status` | Show service status |
+| `tokentap logs` | View service logs |
+| `tokentap open` | Open web dashboard in browser |
+| `tokentap install` | Add shell integration to ~/.zshrc or ~/.bashrc |
+| `tokentap uninstall` | Remove shell integration |
+| `tokentap shell-init` | Print env exports (for `eval "$(tokentap shell-init)"`) |
+| `tokentap env` | Generate `.env` file for project-level config |
+| `tokentap install-cert` | Trust the mitmproxy CA in system keychain |
 
-### Options
+### Legacy commands (no Docker)
 
-```bash
-tokentap start [OPTIONS]
-
-Options:
-  -p, --port NUM    Proxy port (default: 8080)
-  -l, --limit NUM   Token limit for fuel gauge (default: 200000)
-```
-
-```bash
-tokentap claude [OPTIONS] [ARGS]...
-
-Options:
-  -p, --port NUM    Proxy port (default: 8080)
-```
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Terminal 1: tokentap start                                     │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │  HTTP Proxy (localhost:8080)                                ││
-│  │  + Dashboard                                                ││
-│  │  + Prompt Archive                                           ││
-│  └─────────────────────────────────────────────────────────────┘│
-└───────────────────────────────┬─────────────────────────────────┘
-                                │ HTTP
-                                │
-┌───────────────────────────────┴─────────────────────────────────┐
-│  Terminal 2: tokentap claude                                    │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │  Sets ANTHROPIC_BASE_URL=http://localhost:8080              ││
-│  │  Runs: claude                                               ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                │ HTTPS
-                                ▼
-                      ┌───────────────────┐
-                      │ api.anthropic.com │
-                      └───────────────────┘
-```
+| Command | Description |
+|---------|-------------|
+| `tokentap start` | Start proxy + Rich terminal dashboard |
+| `tokentap claude` | Run Claude Code through proxy |
+| `tokentap codex` | Run OpenAI Codex through proxy |
+| `tokentap gemini` | Run Gemini CLI through proxy |
+| `tokentap run --provider <name> <cmd>` | Run any command through proxy |
 
 ## Supported Providers
 
-| Provider | Command | Status |
-|----------|---------|--------|
-| Anthropic (Claude Code) | `tokentap claude` | Supported |
-| Google (Gemini CLI) | `tokentap gemini` | Blocked by upstream issue |
-| OpenAI (Codex) | `tokentap codex` | Supported |
+| Provider | Domain | Status |
+|----------|--------|--------|
+| Anthropic (Claude Code) | `api.anthropic.com` | Supported |
+| OpenAI (Codex) | `api.openai.com` | Supported |
+| Google (Gemini CLI) | `generativelanguage.googleapis.com` | Supported |
 
-## Known Issues
-
-### Gemini CLI
-
-Gemini CLI currently has a [known issue](https://github.com/google-gemini/gemini-cli/issues/15430) where it ignores custom base URLs when using OAuth authentication. tokentap's Gemini support will work automatically once the Gemini CLI team fixes this issue.
-
-## Contributing
-
-Contributions are welcome! Here's how you can help:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
-
-### Development Setup
+## Development
 
 ```bash
 git clone https://github.com/jmuncor/tokentap.git
 cd tokentap
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT -- see [LICENSE](LICENSE).
 
 ---
 

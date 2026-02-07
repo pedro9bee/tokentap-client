@@ -1,6 +1,5 @@
 """Request parsing and token counting utilities."""
 
-import json
 from typing import Any
 
 import tiktoken
@@ -81,25 +80,3 @@ def parse_anthropic_request(body: dict) -> dict:
     return result
 
 
-def parse_request(host: str, body: bytes) -> dict | None:
-    """Parse an intercepted request based on the host.
-
-    Returns parsed data dict or None if parsing fails.
-    """
-    try:
-        body_dict = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-
-    if "api.anthropic.com" in host:
-        return parse_anthropic_request(body_dict)
-
-    return None
-
-
-def extract_last_user_message(messages: list[dict]) -> str:
-    """Extract the most recent user message from a list of messages."""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            return msg.get("content", "")
-    return ""

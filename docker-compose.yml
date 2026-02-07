@@ -1,0 +1,53 @@
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - tokentap-data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - mitmproxy-certs:/root/.mitmproxy
+    environment:
+      - TOKENTAP_MONGO_URI=mongodb://mongodb:27017
+      - TOKENTAP_MONGO_DB=tokentap
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-x", "http://localhost:8080", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - TOKENTAP_MONGO_URI=mongodb://mongodb:27017
+      - TOKENTAP_MONGO_DB=tokentap
+      - TOKENTAP_WEB_PORT=3000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  tokentap-data:
+  mitmproxy-certs:
