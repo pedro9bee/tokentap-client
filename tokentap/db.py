@@ -36,6 +36,11 @@ class MongoEventStore:
         await self.collection.create_index("context.project_name")
         await self.collection.create_index([("program", 1), ("timestamp", -1)])
         await self.collection.create_index([("project", 1), ("timestamp", -1)])
+        # NEW v0.5.0: Device tracking indexes
+        await self.collection.create_index("device_id")
+        await self.collection.create_index("device.id")
+        await self.collection.create_index("is_token_consuming")
+        await self.collection.create_index([("device_id", 1), ("timestamp", -1)])
         self._indexes_created = True
 
     async def insert_event(self, event: dict) -> None:
@@ -288,6 +293,10 @@ class MongoEventStore:
             query["project"] = filters["project"]
         if "capture_mode" in filters:
             query["capture_mode"] = filters["capture_mode"]
+        # NEW v0.5.0: Token filtering
+        if "is_token_consuming" in filters:
+            if filters["is_token_consuming"] is not None:
+                query["is_token_consuming"] = filters["is_token_consuming"]
         if "date_from" in filters or "date_to" in filters:
             ts_query: dict[str, Any] = {}
             if "date_from" in filters:
@@ -303,3 +312,128 @@ class MongoEventStore:
         unit_map = {"hour": "hour", "day": "day", "week": "week"}
         unit = unit_map.get(granularity, "hour")
         return {"$dateTrunc": {"date": "$timestamp", "unit": unit}}
+
+    # -------------------------------------------------------------------------
+    # NEW v0.5.0: Device tracking and management
+    # -------------------------------------------------------------------------
+
+    async def register_device(self, device_id: str, name: str, metadata: dict = None):
+        """Register or update device with custom name."""
+        from datetime import timezone
+        device_doc = {
+            "name": name,
+            "metadata": metadata or {},
+            "last_updated": datetime.now(timezone.utc),
+        }
+
+        await self.db.devices.update_one(
+            {"_id": device_id},
+            {
+                "$set": device_doc,
+                "$setOnInsert": {"first_seen": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+
+    async def get_devices(self) -> list[dict]:
+        """Get all registered devices with their latest info."""
+        from datetime import timezone
+        # Get unique devices from events
+        pipeline = [
+            {"$match": {"device_id": {"$ne": None}}},
+            {
+                "$group": {
+                    "_id": "$device_id",
+                    "first_seen": {"$min": "$timestamp"},
+                    "last_seen": {"$max": "$timestamp"},
+                    "request_count": {"$sum": 1},
+                    "total_input_tokens": {"$sum": "$input_tokens"},
+                    "total_output_tokens": {"$sum": "$output_tokens"},
+                    "last_os": {"$last": "$device.os_type"},
+                    "last_ip": {"$last": "$device.ip_address"},
+                }
+            },
+            {"$sort": {"last_seen": -1}},
+        ]
+
+        device_stats = []
+        async for doc in self.collection.aggregate(pipeline):
+            device_id = doc["_id"]
+
+            # Get custom name from devices collection
+            device_doc = await self.db.devices.find_one({"_id": device_id})
+            custom_name = device_doc.get("name") if device_doc else None
+
+            # Convert datetime objects to ISO strings
+            first_seen = doc["first_seen"]
+            last_seen = doc["last_seen"]
+            if isinstance(first_seen, datetime):
+                first_seen = first_seen.isoformat()
+            if isinstance(last_seen, datetime):
+                last_seen = last_seen.isoformat()
+
+            device_stats.append({
+                "id": device_id,
+                "name": custom_name or f"Device {device_id[:8]}",
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "request_count": doc["request_count"],
+                "total_input_tokens": doc["total_input_tokens"],
+                "total_output_tokens": doc["total_output_tokens"],
+                "os_type": doc.get("last_os"),
+                "ip_address": doc.get("last_ip"),
+                "has_custom_name": bool(custom_name),
+            })
+
+        return device_stats
+
+    async def usage_by_device(self, filters: dict = None) -> list[dict]:
+        """Aggregate token usage by device."""
+        query = self._build_query(filters)
+
+        # Only count token-consuming events by default
+        if filters is None or "is_token_consuming" not in filters:
+            query["is_token_consuming"] = True
+
+        pipeline = [
+            {"$match": query},
+            {
+                "$group": {
+                    "_id": "$device_id",
+                    "input_tokens": {"$sum": "$input_tokens"},
+                    "output_tokens": {"$sum": "$output_tokens"},
+                    "cache_creation_tokens": {"$sum": "$cache_creation_tokens"},
+                    "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                    "request_count": {"$sum": 1},
+                    "total_cost": {"$sum": "$estimated_cost"},
+                }
+            },
+            {"$sort": {"input_tokens": -1}},
+        ]
+
+        results = []
+        async for doc in self.collection.aggregate(pipeline):
+            device_id = doc["_id"]
+            if not device_id:
+                continue
+
+            # Get device name
+            device_doc = await self.db.devices.find_one({"_id": device_id})
+            device_name = device_doc.get("name") if device_doc else f"Device {device_id[:8]}"
+
+            results.append({
+                "device_id": device_id,
+                "device_name": device_name,
+                "input_tokens": doc["input_tokens"],
+                "output_tokens": doc["output_tokens"],
+                "cache_creation_tokens": doc["cache_creation_tokens"],
+                "cache_read_tokens": doc["cache_read_tokens"],
+                "request_count": doc["request_count"],
+                "total_cost": doc.get("total_cost", 0),
+            })
+
+        return results
+
+    async def delete_device(self, device_id: str):
+        """Delete device registration (keeps historical events)."""
+        await self.db.devices.delete_one({"_id": device_id})

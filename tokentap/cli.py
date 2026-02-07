@@ -145,6 +145,29 @@ def up(do_build, no_detach):
     env.pop("https_proxy", None)
     env.pop("http_proxy", None)
 
+    # NEW v0.6.0: Load network mode from config file
+    network_mode_file = TOKENTAP_DIR / ".network-mode"
+    if network_mode_file.exists():
+        mode = network_mode_file.read_text().strip()
+        if mode == "network":
+            env["TOKENTAP_PROXY_HOST"] = "0.0.0.0"
+            env["TOKENTAP_WEB_HOST"] = "0.0.0.0"
+            env["TOKENTAP_MONGO_HOST"] = "0.0.0.0"
+    else:
+        # Default to local (secure)
+        env["TOKENTAP_PROXY_HOST"] = "127.0.0.1"
+        env["TOKENTAP_WEB_HOST"] = "127.0.0.1"
+        env["TOKENTAP_MONGO_HOST"] = "127.0.0.1"
+
+    # NEW v0.6.0: Load debug mode from config file
+    debug_mode_file = TOKENTAP_DIR / ".debug-mode"
+    if debug_mode_file.exists():
+        debug = debug_mode_file.read_text().strip()
+        env["TOKENTAP_DEBUG"] = debug
+    else:
+        # Default to off (secure)
+        env["TOKENTAP_DEBUG"] = "false"
+
     result = subprocess.run(cmd, env=env)
     if result.returncode == 0:
         # Copy mitmproxy CA cert from the proxy container to host
@@ -516,6 +539,146 @@ def reload_config():
             console.print("[red]Failed to reload configuration[/red]")
             console.print("[dim]Proxy container not found. Run 'tokentap status' to check.[/dim]")
             sys.exit(1)
+
+
+@main.command(name="network-mode")
+@click.argument("mode", type=click.Choice(["local", "network"]), required=False)
+def network_mode(mode):
+    """Configure network binding mode (default: local for security).
+
+    MODES:
+      local    - Bind to 127.0.0.1 only (default, secure)
+      network  - Bind to 0.0.0.0 (accessible from network)
+
+    This modifies the TOKENTAP_*_HOST environment variables used by docker-compose.
+    You must restart services after changing mode: tokentap down && tokentap up
+    """
+    from tokentap.config import TOKENTAP_DIR
+    env_file = TOKENTAP_DIR / ".network-mode"
+
+    if not mode:
+        # Show current mode
+        if env_file.exists():
+            current = env_file.read_text().strip()
+            console.print(f"[cyan]Current network mode: [green]{current}[/green][/cyan]")
+        else:
+            console.print("[cyan]Current network mode: [green]local[/green] (default)[/cyan]")
+        return
+
+    if mode == "network":
+        console.print("[yellow]⚠️  WARNING: Network mode exposes services to all network interfaces![/yellow]")
+        console.print("[yellow]   Any device on your network can access the proxy, dashboard, and MongoDB.[/yellow]")
+        console.print()
+        if not click.confirm("Are you sure you want to enable network mode?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+        TOKENTAP_DIR.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("network\n")
+
+        # Set environment variables for current session
+        os.environ["TOKENTAP_PROXY_HOST"] = "0.0.0.0"
+        os.environ["TOKENTAP_WEB_HOST"] = "0.0.0.0"
+        os.environ["TOKENTAP_MONGO_HOST"] = "0.0.0.0"
+
+        console.print("[green]✓ Network mode enabled[/green]")
+        console.print("[dim]Restart services: tokentap down && tokentap up[/dim]")
+    else:
+        if env_file.exists():
+            env_file.unlink()
+
+        # Set environment variables for current session
+        os.environ["TOKENTAP_PROXY_HOST"] = "127.0.0.1"
+        os.environ["TOKENTAP_WEB_HOST"] = "127.0.0.1"
+        os.environ["TOKENTAP_MONGO_HOST"] = "127.0.0.1"
+
+        console.print("[green]✓ Local mode enabled (secure default)[/green]")
+        console.print("[dim]Restart services: tokentap down && tokentap up[/dim]")
+
+
+@main.command(name="admin-token")
+def admin_token():
+    """Display the admin token for destructive API operations.
+
+    The admin token is required for operations like:
+    - DELETE /api/events/all (delete all events)
+    - DELETE /api/devices/{id} (delete device registration)
+
+    Usage with curl:
+        curl -X DELETE -H "X-Admin-Token: <token>" http://localhost:3000/api/events/all
+
+    The token is auto-generated on first use and stored in ~/.tokentap/admin.token
+    """
+    from tokentap.config import get_or_create_admin_token, ADMIN_TOKEN_FILE
+
+    token = get_or_create_admin_token()
+    console.print("[cyan]Admin Token:[/cyan]")
+    console.print(f"[green]{token}[/green]")
+    console.print()
+    console.print(f"[dim]Stored in: {ADMIN_TOKEN_FILE}[/dim]")
+    console.print()
+    console.print("[dim]Use this token with the X-Admin-Token header for destructive operations:[/dim]")
+    console.print(f'[dim]curl -X DELETE -H "X-Admin-Token: {token}" http://localhost:3000/api/events/all[/dim]')
+
+
+@main.command(name="debug")
+@click.argument("mode", type=click.Choice(["on", "off"]), required=False)
+def debug_mode(mode):
+    """Toggle debug mode for raw payload capture (default: off for security).
+
+    MODES:
+      on   - Capture raw request/response payloads (WARNING: may contain sensitive data)
+      off  - Do not capture raw payloads (default, secure)
+
+    Debug mode captures full API request and response bodies, which may contain:
+    - API keys and authentication tokens
+    - User credentials
+    - Personal identifiable information (PII)
+    - Proprietary prompts and data
+
+    Use debug mode ONLY when:
+    - Debugging new provider integrations
+    - Troubleshooting parsing issues
+    - Analyzing API behavior in safe environments
+
+    This sets the TOKENTAP_DEBUG environment variable in docker-compose.
+    You must restart services after changing mode: tokentap down && tokentap up
+    """
+    from tokentap.config import TOKENTAP_DIR
+    env_file = TOKENTAP_DIR / ".debug-mode"
+
+    if not mode:
+        # Show current mode
+        if env_file.exists():
+            current = env_file.read_text().strip()
+            console.print(f"[cyan]Current debug mode: [yellow]{current}[/yellow][/cyan]")
+            if current == "true":
+                console.print("[yellow]⚠️  Raw payloads are being captured (may contain sensitive data)[/yellow]")
+        else:
+            console.print("[cyan]Current debug mode: [green]off[/green] (default, secure)[/cyan]")
+        return
+
+    if mode == "on":
+        console.print("[yellow]⚠️  WARNING: Debug mode will capture raw API request/response payloads![/yellow]")
+        console.print("[yellow]   This may include API keys, credentials, and sensitive data.[/yellow]")
+        console.print("[yellow]   Only enable for troubleshooting in safe environments.[/yellow]")
+        console.print()
+        if not click.confirm("Are you sure you want to enable debug mode?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+        TOKENTAP_DIR.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("true\n")
+
+        console.print("[yellow]✓ Debug mode enabled[/yellow]")
+        console.print("[dim]Restart services: tokentap down && tokentap up[/dim]")
+        console.print("[dim]Note: Raw payloads will be stored in MongoDB[/dim]")
+    else:
+        if env_file.exists():
+            env_file.unlink()
+
+        console.print("[green]✓ Debug mode disabled (secure default)[/green]")
+        console.print("[dim]Restart services: tokentap down && tokentap up[/dim]")
 
 
 # =============================================================================

@@ -4,6 +4,172 @@ All notable changes to Tokentap are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.0] - 2026-02-08
+
+### Security Fixes 🔒
+
+**BREAKING CHANGES**: This release addresses critical security vulnerabilities identified in technical reviews.
+
+#### 1. Localhost-Only Binding (BREAKING)
+- **Changed**: Default network binding from `0.0.0.0` to `127.0.0.1`
+- **Why**: Prevent unauthorized access from network devices
+- **Migration**: Use `tokentap network-mode network` if network access needed
+- **Impact**: Services only accessible from localhost by default
+
+#### 2. Debug-Only Raw Payload Capture (BREAKING)
+- **Changed**: Raw request/response payloads NO LONGER captured by default
+- **Why**: Prevent accidental capture of API keys, credentials, PII
+- **Migration**: Use `tokentap debug on` when troubleshooting
+- **What's Still Captured**: Token counts, models, paths, client types, message structure (content redacted)
+- **Impact**: `raw_request` and `raw_response` fields empty unless debug mode enabled
+
+#### 3. Admin Token Authentication (BREAKING)
+- **Added**: Token-based auth for destructive endpoints
+- **Affected**: `DELETE /api/events/all`, `DELETE /api/devices/{id}`
+- **Why**: Prevent accidental or unauthorized data deletion
+- **Migration**: Use `tokentap admin-token` to get token, pass via `X-Admin-Token` header
+- **Impact**: DELETE operations now require authentication
+
+### Bug Fixes
+
+#### Provider Detection After Rewrite
+- **Fixed**: Provider detection now uses updated host after backward compat rewrite
+- **Impact**: Events correctly classified when using legacy `*_BASE_URL` vars
+- **Issue**: Host variable not updated after rewrite, causing misclassification
+
+### Added
+
+#### Network Mode Management
+- **Command**: `tokentap network-mode [local|network]`
+- **Purpose**: Control network binding (localhost vs all interfaces)
+- **Config**: Stores preference in `~/.tokentap/.network-mode`
+- **Warning**: Prompts user before enabling network mode
+
+#### Debug Mode Management
+- **Command**: `tokentap debug [on|off]`
+- **Purpose**: Toggle raw payload capture for troubleshooting
+- **Config**: Stores state in `~/.tokentap/.debug-mode`
+- **Warning**: Alerts about sensitive data capture
+
+#### Admin Token Management
+- **Command**: `tokentap admin-token`
+- **Purpose**: Display admin token for destructive API operations
+- **Storage**: Auto-generated in `~/.tokentap/admin.token` (0600 permissions)
+
+#### Missing API Endpoints
+- **Added**: `GET /api/stats/by-program` - Usage aggregated by program
+- **Added**: `GET /api/stats/by-project` - Usage aggregated by project
+- **Note**: These were documented in v0.4.0 but not implemented
+
+### Changed
+
+#### Kiro Logging
+- **Changed**: Verbose Kiro debug logs now only appear in debug mode
+- **Benefit**: Cleaner production logs, no sensitive data leakage
+
+#### Message Sanitization
+- **Added**: `_sanitize_messages()` method in proxy
+- **Purpose**: Keep message structure (roles) but redact content as `[REDACTED]`
+- **Benefit**: Analyze conversation patterns without capturing sensitive data
+
+### Packaging
+
+#### PyPI Distribution Fix
+- **Added**: `MANIFEST.in` to include Docker files and scripts
+- **Fixed**: `docker-compose.yml`, Dockerfiles, scripts now bundled in package
+- **Impact**: `tokentap up` works after installing from PyPI
+
+#### Package Data
+- **Updated**: `pyproject.toml` with `include-package-data = true`
+- **Added**: Docker files and scripts to package-data
+
+### Documentation
+
+- **Added**: `MIGRATION_v0.6.0.md` - Comprehensive migration guide
+- **Updated**: `CLAUDE.md` - Document new commands and security features
+- **Updated**: `CHANGES.md` - This changelog
+
+### Technical Details
+
+#### Configuration Files
+New files in `~/.tokentap/`:
+- `.network-mode` - Network binding preference
+- `.debug-mode` - Debug mode state
+- `admin.token` - Admin authentication token
+
+#### Environment Variables
+New variables in docker-compose:
+- `TOKENTAP_PROXY_HOST` - Proxy binding host (default: 127.0.0.1)
+- `TOKENTAP_WEB_HOST` - Web binding host (default: 127.0.0.1)
+- `TOKENTAP_MONGO_HOST` - MongoDB binding host (default: 127.0.0.1)
+- `TOKENTAP_DEBUG` - Debug mode flag (default: false)
+
+#### Code Organization
+- **New**: `get_or_create_admin_token()` in `config.py`
+- **New**: `verify_admin_token()` dependency in `web/app.py`
+- **New**: `_sanitize_messages()` static method in `proxy.py`
+
+### Upgrade Notes
+
+See `MIGRATION_v0.6.0.md` for detailed migration guide.
+
+**Critical Actions After Upgrade**:
+1. Review network mode: `tokentap network-mode`
+2. Confirm debug mode OFF: `tokentap debug`
+3. Save admin token: `tokentap admin-token`
+4. Update DELETE API calls to include `X-Admin-Token` header
+
+---
+
+## [0.5.0] - 2026-02-08
+
+### Added - Device Tracking & Smart Filtering
+
+**Major Feature**: Track token usage per device with friendly names.
+
+#### Device Tracking
+- **Device detection**: Automatically extracts device_id from session_id, User-Agent, IP
+- **Device registry**: MongoDB collection to store custom device names
+- **Device fingerprinting**: Stable ID generation from IP + OS + User-Agent
+- **OS detection**: Parses User-Agent for OS type/version (macOS, Linux, Windows)
+
+#### Web Dashboard - Device Management
+- **New "Devices" tab**: View all devices with stats
+- **Inline rename**: Click device name to edit, auto-saves
+- **Per-device stats**: Input/output tokens, request count, cost per device
+- **Device cleanup**: Delete device registration (keeps historical data)
+
+#### Smart Token Detection
+- **budget_tokens detection**: Automatically flags events with budget_tokens
+- **is_token_consuming field**: Distinguishes LLM calls from telemetry
+- **Auto-filtering**: Device stats show only token-consuming events by default
+
+#### API Endpoints
+- `GET /api/devices` - List all devices with stats
+- `POST /api/devices/{id}/rename` - Rename device
+- `DELETE /api/devices/{id}` - Delete device registration
+- `GET /api/stats/by-device` - Aggregate usage by device
+
+#### Dependencies
+- Added `user-agents>=2.2.0` for User-Agent parsing
+
+#### MongoDB Schema Changes
+- **New indexes**: `device_id`, `device.id`, `is_token_consuming`, `(device_id, timestamp)`
+- **New collection**: `devices` for device registry
+- **New event fields**: `device` (object), `device_id` (string), `is_token_consuming` (boolean), `has_budget_tokens` (boolean)
+
+#### Example Usage
+```bash
+# Devices are auto-detected from requests
+# View in dashboard: http://localhost:3000 → Devices tab
+# Click device name to rename (e.g., "Mac M1 Escritório")
+
+# Query device stats via API
+curl http://localhost:3000/api/stats/by-device
+```
+
+See `docs/08_DEVICE_TRACKING.md` for full guide.
+
 ## [0.4.1] - 2026-02-07
 
 ### Fixed - Complete Request Capture (Critical Bug Fix)

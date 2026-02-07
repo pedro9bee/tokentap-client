@@ -5,7 +5,7 @@ services:
     volumes:
       - tokentap-data:/data/db
     ports:
-      - "27017:27017"
+      - "${TOKENTAP_MONGO_HOST:-127.0.0.1}:27017:27017"
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -18,7 +18,7 @@ services:
       dockerfile: Dockerfile.proxy
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${TOKENTAP_PROXY_HOST:-127.0.0.1}:8080:8080"
     volumes:
       - mitmproxy-certs:/root/.mitmproxy
     environment:
@@ -39,7 +39,7 @@ services:
       dockerfile: Dockerfile.web
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${TOKENTAP_WEB_HOST:-127.0.0.1}:3000:3000"
     environment:
       - TOKENTAP_MONGO_URI=mongodb://mongodb:27017
       - TOKENTAP_MONGO_DB=tokentap

@@ -9,7 +9,7 @@ from typing import Callable
 from mitmproxy import http, options
 from mitmproxy.tools import dump
 
-from tokentap.config import DEFAULT_PROXY_PORT, PROVIDERS
+from tokentap.config import DEFAULT_PROXY_PORT, PROVIDERS, DEBUG_MODE
 from tokentap.parser import count_tokens, parse_anthropic_request
 from tokentap.provider_config import get_provider_config
 from tokentap.generic_parser import GenericParser
@@ -86,6 +86,8 @@ class TokentapAddon:
                 flow.request.host = upstream
                 flow.request.port = 443
                 flow.request.scheme = "https"
+                # FIX v0.6.0: Update host variable after rewrite for correct provider detection
+                host = flow.request.host
             else:
                 logger.warning("Unknown API path: %s", path)
                 flow.response = http.Response.make(
@@ -205,15 +207,17 @@ class TokentapAddon:
         request_parsed = None
         try:
             body_dict = json.loads(flow.request.content)
-            # DEBUG: Log full request for kiro to understand the format
-            if provider == "kiro":
-                logger.info("KIRO RAW REQUEST: %s", json.dumps(body_dict, indent=2))
         except (json.JSONDecodeError, ValueError, TypeError):
-            if provider == "kiro":
-                logger.info("KIRO RAW REQUEST (not JSON): %s", flow.request.content[:500])
+            # NEW v0.6.0: Only log parsing errors in debug mode
+            if DEBUG_MODE and provider == "kiro":
+                logger.info("KIRO RAW REQUEST (not JSON, DEBUG): %s", flow.request.content[:500])
             pass
 
         if body_dict:
+            # NEW v0.6.0: Only log full request in debug mode
+            if DEBUG_MODE and provider == "kiro":
+                logger.info("KIRO RAW REQUEST (DEBUG): %s", json.dumps(body_dict, indent=2))
+
             # Try generic parser first
             if self.generic_parser:
                 try:
@@ -243,11 +247,12 @@ class TokentapAddon:
             logger.debug("Parsing %s stream (%d chunks)", stream_type, len(chunks))
 
             if stream_type == "eventstream" and provider == "kiro":
-                # Amazon EventStream format - log full content for analysis
-                full_content = b"".join(chunks)
-                logger.info("KIRO EventStream full content (%d bytes): %s",
-                           len(full_content),
-                           full_content[:2000].decode('utf-8', errors='replace'))
+                # Amazon EventStream format - log full content only in debug mode
+                if DEBUG_MODE:
+                    full_content = b"".join(chunks)
+                    logger.info("KIRO EventStream full content (DEBUG, %d bytes): %s",
+                               len(full_content),
+                               full_content[:2000].decode('utf-8', errors='replace'))
                 # Try to parse as eventstream (for now, no tokens extracted)
                 usage = {
                     "input_tokens": 0,
@@ -271,25 +276,25 @@ class TokentapAddon:
                 response_data = None
         else:
             response_data = None
-            # DEBUG: Log response details for kiro BEFORE parsing
-            if provider == "kiro":
-                logger.info("KIRO Response: status=%d, content-length=%d, content-type=%s",
+            # NEW v0.6.0: Only log response details in debug mode
+            if DEBUG_MODE and provider == "kiro":
+                logger.info("KIRO Response (DEBUG): status=%d, content-length=%d, content-type=%s",
                            flow.response.status_code,
                            len(flow.response.content),
                            flow.response.headers.get("content-type", "unknown"))
-                logger.debug("KIRO Response Headers: %s", dict(flow.response.headers))
+                logger.debug("KIRO Response Headers (DEBUG): %s", dict(flow.response.headers))
 
             try:
                 response_data = json.loads(flow.response.content)
-                # DEBUG: Log full response for kiro to understand the format
-                if provider == "kiro":
-                    logger.info("KIRO RAW RESPONSE (JSON): %s", json.dumps(response_data, indent=2))
+                # NEW v0.6.0: Only log full response in debug mode
+                if DEBUG_MODE and provider == "kiro":
+                    logger.info("KIRO RAW RESPONSE (JSON, DEBUG): %s", json.dumps(response_data, indent=2))
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.warning("Failed to parse JSON response from %s", provider)
-                # DEBUG: Log raw content if JSON parsing fails
-                if provider == "kiro":
+                # NEW v0.6.0: Only log raw content in debug mode
+                if DEBUG_MODE and provider == "kiro":
                     raw_preview = flow.response.content[:1000].decode('utf-8', errors='replace')
-                    logger.info("KIRO RAW CONTENT (not JSON, first 1000 bytes): %s", raw_preview)
+                    logger.info("KIRO RAW CONTENT (not JSON, first 1000 bytes, DEBUG): %s", raw_preview)
                 pass
 
             if response_data:
@@ -337,6 +342,14 @@ class TokentapAddon:
                 + usage.get("output_tokens", 0) * cost_per_output
             )
 
+        # NEW v0.5.0: Extract device information
+        device_info = self._extract_device_info(flow, body_dict)
+
+        # NEW v0.6.0: Sanitize messages by default (only full content in debug mode)
+        messages_for_event = request_parsed.get("messages", []) if request_parsed else []
+        if not DEBUG_MODE and messages_for_event:
+            messages_for_event = self._sanitize_messages(messages_for_event)
+
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
@@ -352,7 +365,7 @@ class TokentapAddon:
             "cache_creation_tokens": usage.get("cache_creation_tokens", 0),
             "cache_read_tokens": usage.get("cache_read_tokens", 0),
             "estimated_input_tokens": estimated_input_tokens,
-            "messages": request_parsed.get("messages", []) if request_parsed else [],
+            "messages": messages_for_event,
             "response_status": flow.response.status_code,
             "response_stop_reason": usage.get("stop_reason"),
             "streaming": is_streaming,
@@ -365,6 +378,12 @@ class TokentapAddon:
             "estimated_cost": estimated_cost,
             # NEW: Capture mode
             "capture_mode": "capture_all" if provider_name == "unknown" else "known",
+            # NEW v0.5.0: Device tracking
+            "device": device_info,
+            "device_id": device_info.get("id"),  # Denormalized for fast queries
+            # NEW v0.5.0: Smart token detection
+            "is_token_consuming": self._is_token_consuming_event(body_dict, provider_name),
+            "has_budget_tokens": self._has_budget_tokens(body_dict) if body_dict else False,
         }
 
         # NEW v0.4.1: Add additional request fields if present (system, tools, thinking, metadata)
@@ -406,21 +425,28 @@ class TokentapAddon:
         if self.db:
             db_event = {**event}
 
-            # ALWAYS capture full raw request to prevent data loss (v0.4.1 fix)
-            # This ensures we can reprocess if parsing improves later
-            if body_dict:
-                db_event["raw_request"] = body_dict
+            # NEW v0.6.0: Only capture raw payloads in debug mode
+            # This prevents accidental capture of sensitive data (API keys, credentials, PII)
+            if DEBUG_MODE:
+                if body_dict:
+                    db_event["raw_request"] = body_dict
+                    logger.debug(f"DEBUG MODE: Captured raw request for {provider_name}")
 
-            # Capture full response for unknown providers or if configured
-            should_capture_response = (
-                provider_name == "unknown"
-                or (provider_info and provider_info.get("capture_full_response"))
-                or (self.provider_config and self.provider_config.capture_mode == "capture_all")
-            )
+                # Capture full response in debug mode
+                should_capture_response = (
+                    provider_name == "unknown"
+                    or (provider_info and provider_info.get("capture_full_response"))
+                    or (self.provider_config and self.provider_config.capture_mode == "capture_all")
+                )
 
-            if should_capture_response and response_data:
-                db_event["raw_response"] = response_data
-                logger.debug(f"Captured full response for {provider_name}")
+                if should_capture_response and response_data:
+                    db_event["raw_response"] = response_data
+                    logger.debug(f"DEBUG MODE: Captured raw response for {provider_name}")
+
+                # Warn once per startup about debug mode
+                if not hasattr(self, "_debug_warning_shown"):
+                    logger.warning("⚠️  DEBUG MODE ACTIVE: Capturing raw request/response payloads (may contain sensitive data)")
+                    self._debug_warning_shown = True
 
             try:
                 await self.db.insert_event(db_event)
@@ -430,6 +456,34 @@ class TokentapAddon:
     # -------------------------------------------------------------------------
     # Context and parsing helpers
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_messages(messages: list) -> list:
+        """Sanitize message content while preserving structure for categorization.
+
+        Replaces actual content with [REDACTED] but keeps role information.
+        This allows analysis of conversation patterns without capturing sensitive data.
+        """
+        sanitized = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                sanitized_msg = {"role": msg.get("role", "unknown")}
+                # Keep content structure but redact actual text
+                if "content" in msg:
+                    content = msg["content"]
+                    if isinstance(content, str):
+                        sanitized_msg["content"] = "[REDACTED]" if content else ""
+                    elif isinstance(content, list):
+                        # For multi-part content, keep type info but redact text
+                        sanitized_msg["content"] = [
+                            {"type": part.get("type", "unknown"), "text": "[REDACTED]"}
+                            if part.get("type") == "text" else {"type": part.get("type", "unknown")}
+                            for part in content
+                        ]
+                    else:
+                        sanitized_msg["content"] = "[REDACTED]"
+                sanitized.append(sanitized_msg)
+        return sanitized
 
     @staticmethod
     def _extract_context_metadata(flow: http.HTTPFlow) -> dict:
@@ -568,6 +622,145 @@ class TokentapAddon:
         elif provider == "kiro":
             return _parse_amazon_q_request(body_dict)
         return None
+
+    # -------------------------------------------------------------------------
+    # NEW v0.5.0: Device tracking and smart filtering
+    # -------------------------------------------------------------------------
+
+    def _extract_device_info(self, flow: http.HTTPFlow, body_dict: dict) -> dict:
+        """Extract device identification from request.
+
+        Attempts multiple strategies:
+        1. Extract from raw_request.events.event_data.device_id (Claude Code)
+        2. Extract from raw_request.events.event_data.session_id
+        3. Parse User-Agent for OS/platform
+        4. Generate fingerprint from IP + hostname
+        """
+        device_info = {
+            "id": None,
+            "session_id": None,
+            "hostname": None,
+            "os_type": None,
+            "os_version": None,
+            "ip_address": None,
+            "user_agent": None,
+        }
+
+        # 1. Extract session_id from raw request (Claude Code specific)
+        if body_dict and isinstance(body_dict, dict):
+            # Check events.event_data.session_id (telemetry events)
+            events = body_dict.get("events", [])
+            if events and len(events) > 0:
+                event_data = events[0].get("event_data", {})
+                device_info["session_id"] = event_data.get("session_id")
+                device_info["device_id_from_event"] = event_data.get("device_id")
+
+                # Extract platform from env
+                env = event_data.get("env", {})
+                device_info["os_type"] = env.get("platform")
+
+        # 2. Parse User-Agent for OS details
+        user_agent = flow.request.headers.get("user-agent", "")
+        device_info["user_agent"] = user_agent
+
+        if user_agent:
+            # Use user-agents library to parse
+            try:
+                from user_agents import parse as parse_ua
+                ua = parse_ua(user_agent)
+                device_info["os_type"] = device_info["os_type"] or ua.os.family
+                device_info["os_version"] = ua.os.version_string
+                device_info["browser"] = ua.browser.family
+                device_info["is_mobile"] = ua.is_mobile
+                device_info["is_bot"] = ua.is_bot
+            except Exception as e:
+                logger.debug(f"Failed to parse User-Agent: {e}")
+
+        # 3. Get IP address
+        if flow.client_conn and flow.client_conn.address:
+            device_info["ip_address"] = flow.client_conn.address[0]
+
+        # 4. Generate stable device_id
+        # Priority: session_id > device_id_from_event > fingerprint
+        device_id = (
+            device_info.get("session_id") or
+            device_info.get("device_id_from_event") or
+            self._generate_device_fingerprint(device_info)
+        )
+        device_info["id"] = device_id
+
+        return device_info
+
+    @staticmethod
+    def _generate_device_fingerprint(device_info: dict) -> str:
+        """Generate stable device fingerprint from available info."""
+        import hashlib
+
+        # Combine IP + OS + User-Agent to create fingerprint
+        components = [
+            device_info.get("ip_address", ""),
+            device_info.get("os_type", ""),
+            device_info.get("user_agent", "")[:50],  # First 50 chars
+        ]
+
+        fingerprint_str = "|".join(filter(None, components))
+        if not fingerprint_str:
+            # Fallback to random ID
+            import uuid
+            return f"unknown-{uuid.uuid4().hex[:8]}"
+
+        # Generate hash
+        hash_obj = hashlib.md5(fingerprint_str.encode())
+        return f"device-{hash_obj.hexdigest()[:12]}"
+
+    @staticmethod
+    def _is_token_consuming_event(body_dict: dict, provider_name: str) -> bool:
+        """Detect if this event represents actual token consumption.
+
+        Returns False for telemetry, logging, health checks.
+        Returns True for actual LLM API calls.
+        """
+        if not body_dict:
+            return False
+
+        # Check for budget_tokens (indicates thinking/token budget)
+        if TokentapAddon._has_budget_tokens(body_dict):
+            return True
+
+        # Check path patterns
+        # Token-consuming paths: /v1/messages, /v1/chat/completions, /generateContent
+        # Non-consuming: /api/event_logging, /api/hello, /health
+
+        # For now, use provider patterns from config
+        if provider_name == "unknown":
+            return False
+
+        # If it has messages array, likely token-consuming
+        if body_dict.get("messages"):
+            return True
+
+        # If it has prompt/contents, likely token-consuming
+        if body_dict.get("prompt") or body_dict.get("contents"):
+            return True
+
+        return False
+
+    @staticmethod
+    def _has_budget_tokens(body_dict: dict) -> bool:
+        """Check if request has budget_tokens field."""
+        if not body_dict:
+            return False
+
+        # Direct field
+        if "budget_tokens" in body_dict:
+            return True
+
+        # Nested in thinking config
+        thinking = body_dict.get("thinking", {})
+        if isinstance(thinking, dict) and "budget_tokens" in thinking:
+            return True
+
+        return False
 
 
 def _parse_openai_request(body: dict) -> dict:

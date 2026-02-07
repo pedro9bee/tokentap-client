@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokentap"
-version = "0.4.1"
+version = "0.6.0"
 description = "Token tracker for LLM CLI tools with web dashboard and Docker support"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,6 +36,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "rich>=13.0.0",
     "tiktoken>=0.5.0",
+    "user-agents>=2.2.0",
     "uvicorn>=0.23.0",
 ]
 
@@ -50,8 +51,18 @@ Issues = "https://github.com/jmuncor/tokentap/issues"
 [project.scripts]
 tokentap = "tokentap.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
 
 [tool.setuptools.package-data]
-tokentap = ["web/static/**/*", "providers.json"]
+tokentap = [
+    "web/static/**/*",
+    "providers.json",
+    "../docker-compose.yml",
+    "../Dockerfile.proxy",
+    "../Dockerfile.web",
+    "../scripts/*.sh"
+]

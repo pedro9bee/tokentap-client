@@ -6,10 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Tokentap is a Python CLI tool for tracking LLM token usage in real-time. It runs a MITM proxy (mitmproxy) that intercepts HTTPS API traffic between LLM CLI tools (Claude Code, Gemini CLI, OpenAI Codex) and their upstream APIs, parsing both requests and responses to capture token usage.
 
-**Key Features (v0.4.0)**:
+**Key Features (v0.6.0)**:
 - 🔧 **Dynamic Provider Configuration**: Add new LLM providers via JSON config (no code changes)
 - 🚀 **Service Management**: Auto-start on boot with health monitoring (macOS/Linux)
 - 📊 **Context Tracking**: Track usage by program, project, and custom metadata
+- 📱 **Device Tracking**: Auto-detect devices and track token usage per device (v0.5.0)
+- 🔒 **Security-First**: Localhost-only binding, debug-mode-only payload capture, admin token auth (NEW in v0.6.0)
 - 🐳 **Docker-based**: Isolated MongoDB + Web Dashboard + Proxy
 
 Clients use standard `HTTPS_PROXY` env var -- no provider-specific `*_BASE_URL` vars needed. Data is stored in MongoDB and visualized through a web dashboard.
@@ -41,9 +43,14 @@ tokentap service disable          # Disable auto-start
 tokentap service restart          # Restart service
 tokentap service status           # Detailed status with health checks
 
-# Configuration management (NEW in v0.4.0)
+# Configuration management
 tokentap reload-config            # Hot-reload provider configuration
 tokentap env -o .env              # Generate .env file for project
+
+# Security management (NEW in v0.6.0)
+tokentap network-mode [local|network]  # Configure network binding (default: local)
+tokentap debug [on|off]                # Toggle debug mode for payload capture (default: off)
+tokentap admin-token                   # Display admin token for DELETE operations
 
 # Legacy mode (no Docker, Rich terminal dashboard)
 tokentap start                    # Start proxy + Rich dashboard
@@ -276,6 +283,87 @@ tokentap service status    # Detailed status
 ```
 
 See `docs/03_SERVICE_MANAGEMENT.md` for full guide.
+
+## Security Features (v0.6.0)
+
+Tokentap v0.6.0 introduces security-first defaults to protect sensitive data.
+
+### 1. Localhost-Only Binding (Default)
+
+**What**: Services bind to `127.0.0.1` instead of `0.0.0.0`.
+
+**Why**: Prevents unauthorized access from other devices on your network.
+
+**Management**:
+```bash
+tokentap network-mode              # Check current mode
+tokentap network-mode network      # Enable network access (with warning)
+tokentap network-mode local        # Revert to secure default
+```
+
+### 2. Debug-Mode-Only Payload Capture (Default OFF)
+
+**What**: Raw request/response payloads NOT captured unless debug mode enabled.
+
+**Why**: Prevents accidental capture of:
+- API keys and authentication tokens
+- User credentials
+- Personal identifiable information (PII)
+- Proprietary prompts and data
+
+**What's Still Captured** (always, for categorization):
+- ✅ Token counts (input/output/cache)
+- ✅ Model names
+- ✅ API paths
+- ✅ Client types (claude-code, kiro-cli, etc.)
+- ✅ Message structure with roles (content: `[REDACTED]`)
+- ✅ Device tracking
+- ✅ Smart token detection flags
+- ✅ Cost estimates
+
+**Management**:
+```bash
+tokentap debug              # Check current mode
+tokentap debug on           # Enable for troubleshooting (with warning)
+tokentap debug off          # Disable (secure default)
+```
+
+**When to Enable**: Only when debugging new provider integrations or troubleshooting parsing issues.
+
+### 3. Admin Token Authentication
+
+**What**: DELETE endpoints require `X-Admin-Token` header.
+
+**Why**: Prevents accidental or unauthorized data deletion.
+
+**Protected Endpoints**:
+- `DELETE /api/events/all`
+- `DELETE /api/devices/{id}`
+
+**Management**:
+```bash
+tokentap admin-token        # Display token
+
+# Use with API:
+curl -X DELETE \
+  -H "X-Admin-Token: YOUR_TOKEN" \
+  http://localhost:3000/api/events/all
+```
+
+**Token Storage**: Auto-generated in `~/.tokentap/admin.token` with 0600 permissions.
+
+### Security Best Practices
+
+1. **Keep debug mode OFF** in production environments
+2. **Use network mode sparingly** - only in trusted networks
+3. **Treat admin token like a password** - don't commit to git
+4. **Review existing MongoDB data** - may contain sensitive info from pre-v0.6.0
+5. **Use TLS/SSL** for production MongoDB connections
+6. **Limit MongoDB access** - configure firewall rules if exposing externally
+
+### Migration from v0.5.0
+
+See `MIGRATION_v0.6.0.md` for detailed upgrade guide including breaking changes.
 
 ## Data Flow
 
@@ -556,21 +644,28 @@ db.events.createIndex({project: 1, timestamp: -1});
 
 ## Version History
 
+- **0.6.0** (2026-02-08): Security fixes, admin token auth, localhost-only binding, debug-mode payload capture - **IMPLEMENTED ✅**
+- **0.5.0** (2026-02-08): Device tracking, smart token detection, inline device rename - **VALIDATED ✅**
 - **0.4.0** (2026-02-07): Dynamic provider config, service management, context tracking - **VALIDATED ✅**
 - **0.3.0** (2026-02-06): mitmproxy migration, Docker support, web dashboard
 - **0.2.0**: Multi-provider support, MongoDB storage
 - **0.1.0**: Initial release
 
-## Validation Status (v0.4.0)
+## Validation Status (v0.6.0)
 
-**Last validated**: 2026-02-07
+**Last validated**: 2026-02-08
 
-**Results**:
-- ✅ 93 events captured (including claude-sonnet-4-5-20250929)
-- ✅ All 8 MongoDB indexes created (4 new in v0.4.0)
-- ✅ Dynamic provider config working (providers.json + GenericParser)
-- ✅ Web dashboard API functional (http://localhost:3000)
-- ✅ Service management scripts created and tested
-- ⚠️ Context wrapper has Docker limitation (basic User-Agent detection works)
+**Major Changes**:
+- ✅ Security-first defaults: localhost-only binding
+- ✅ Debug-mode-only payload capture (prevents data leakage)
+- ✅ Admin token authentication for DELETE operations
+- ✅ Provider detection bug fixed (backward compat rewrite)
+- ✅ Missing API endpoints added (`/api/stats/by-program`, `/api/stats/by-project`)
+- ✅ PyPI packaging fixed (Docker files included)
 
-**System Status**: Fully operational and production-ready
+**Breaking Changes**:
+- ⚠️ Services bind to `127.0.0.1` by default (use `tokentap network-mode network` for network access)
+- ⚠️ Raw payloads NOT captured by default (use `tokentap debug on` when needed)
+- ⚠️ DELETE endpoints require admin token (`tokentap admin-token`)
+
+**System Status**: Production-ready with enhanced security

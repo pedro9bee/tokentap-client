@@ -51,3 +51,25 @@ DEFAULT_PROVIDERS_PATH = Path(__file__).parent / "providers.json"
 # Shell integration marker
 SHELL_INTEGRATION_START = "# >>> tokentap shell integration >>>"
 SHELL_INTEGRATION_END = "# <<< tokentap shell integration <<<"
+
+# Network and security settings (v0.6.0)
+NETWORK_MODE = os.environ.get("TOKENTAP_NETWORK_MODE", "local")  # local or network
+DEBUG_MODE = os.environ.get("TOKENTAP_DEBUG", "false").lower() == "true"
+ADMIN_TOKEN_FILE = TOKENTAP_DIR / "admin.token"
+
+
+def get_or_create_admin_token() -> str:
+    """Get existing admin token or create a new one."""
+    import secrets
+
+    TOKENTAP_DIR.mkdir(parents=True, exist_ok=True)
+
+    if ADMIN_TOKEN_FILE.exists():
+        return ADMIN_TOKEN_FILE.read_text().strip()
+
+    # Generate new token
+    token = secrets.token_urlsafe(32)
+    ADMIN_TOKEN_FILE.write_text(token + "\n")
+    ADMIN_TOKEN_FILE.chmod(0o600)  # Read/write for owner only
+
+    return token

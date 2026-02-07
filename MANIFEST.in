@@ -1,0 +1,15 @@
+# Include Docker configuration files
+include docker-compose.yml
+include Dockerfile.proxy
+include Dockerfile.web
+
+# Include shell scripts
+recursive-include scripts *.sh
+
+# Include documentation
+include README.md
+include CLAUDE.md
+recursive-include docs *.md
+
+# Include provider configuration
+include tokentap/providers.json

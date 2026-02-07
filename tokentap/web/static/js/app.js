@@ -17,6 +17,12 @@ document.addEventListener('alpine:init', () => {
     loading: true,
     error: null,
 
+    // Device state (v0.5.0)
+    devices: [],
+    deviceStats: [],
+    editingDeviceId: null,
+    editingDeviceName: '',
+
     // Filters
     filterProvider: '',
     filterModel: '',
@@ -56,12 +62,22 @@ document.addEventListener('alpine:init', () => {
       this.loading = true;
       this.error = null;
       try {
-        await Promise.all([
+        const promises = [
           this.loadSummary(),
           this.loadByModel(),
           this.loadOverTime(),
-          this.loadEvents(),
-        ]);
+        ];
+
+        // Load events or devices depending on tab
+        if (this.tab === 'events') {
+          promises.push(this.loadEvents());
+        } else if (this.tab === 'devices') {
+          promises.push(this.loadDevices());
+        } else {
+          promises.push(this.loadEvents());
+        }
+
+        await Promise.all(promises);
       } catch (e) {
         this.error = e.message;
       }
@@ -186,6 +202,47 @@ document.addEventListener('alpine:init', () => {
         'claude-code': 'Claude Code',
       };
       return map[client] || client;
+    },
+
+    // Device management methods (v0.5.0)
+    async loadDevices() {
+      this.devices = await API.getDevices();
+      this.deviceStats = await API.getDeviceStats(this.filterParams);
+    },
+
+    startEditDevice(device) {
+      this.editingDeviceId = device.id;
+      this.editingDeviceName = device.name;
+    },
+
+    async saveDeviceName(device) {
+      try {
+        await API.renameDevice(device.id, this.editingDeviceName);
+        this.editingDeviceId = null;
+        await this.loadDevices();
+      } catch (err) {
+        console.error('Failed to rename device:', err);
+        alert('Failed to rename device');
+      }
+    },
+
+    cancelEditDevice() {
+      this.editingDeviceId = null;
+      this.editingDeviceName = '';
+    },
+
+    async deleteDevice(deviceId, deviceName) {
+      if (!confirm(`Delete device "${deviceName}"? Historical data will be kept.`)) {
+        return;
+      }
+
+      try {
+        await API.deleteDevice(deviceId);
+        await this.loadDevices();
+      } catch (err) {
+        console.error('Failed to delete device:', err);
+        alert('Failed to delete device');
+      }
     },
   }));
 });

@@ -29,6 +29,7 @@
     <div class="tabs">
       <button class="tab-btn" :class="{ active: tab === 'overview' }" @click="tab = 'overview'">Dashboard</button>
       <button class="tab-btn" :class="{ active: tab === 'events' }" @click="tab = 'events'">Event Log</button>
+      <button class="tab-btn" :class="{ active: tab === 'devices' }" @click="tab = 'devices'; loadDevices()">Devices</button>
     </div>
 
     <!-- Filters -->
@@ -177,6 +178,81 @@
             <button class="btn" @click="nextPage()" :disabled="eventsPage >= totalPages - 1">Next</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== DEVICES TAB ===== -->
+    <div x-show="tab === 'devices'">
+      <div class="table-container">
+        <div class="title">Device Management</div>
+        <p style="color: var(--text-dim); margin-bottom: 1rem;">Track token usage per device with custom names</p>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Device Name</th>
+              <th>OS</th>
+              <th>IP Address</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Requests</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="device in devices" :key="device.id">
+              <tr>
+                <!-- Device Name (editable) -->
+                <td>
+                  <template x-if="editingDeviceId !== device.id">
+                    <span
+                      class="device-name"
+                      :class="{ 'has-custom-name': device.has_custom_name }"
+                      @click="startEditDevice(device)"
+                      x-text="device.name"
+                      title="Click to edit">
+                    </span>
+                  </template>
+                  <template x-if="editingDeviceId === device.id">
+                    <input
+                      type="text"
+                      x-model="editingDeviceName"
+                      @keyup.enter="saveDeviceName(device)"
+                      @keyup.escape="cancelEditDevice()"
+                      @blur="saveDeviceName(device)"
+                      class="inline-edit"
+                      x-init="$el.focus()">
+                  </template>
+                </td>
+
+                <td x-text="device.os_type || 'Unknown'"></td>
+                <td x-text="device.ip_address || 'N/A'"></td>
+                <td x-text="formatTime(device.first_seen)"></td>
+                <td x-text="formatTime(device.last_seen)"></td>
+                <td x-text="formatNumber(device.total_input_tokens)"></td>
+                <td x-text="formatNumber(device.total_output_tokens)"></td>
+                <td x-text="formatNumber(device.request_count)"></td>
+
+                <td>
+                  <button
+                    @click="deleteDevice(device.id, device.name)"
+                    class="btn-danger btn-sm">
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            </template>
+
+            <template x-if="devices.length === 0">
+              <tr>
+                <td colspan="9" style="text-align:center;color:var(--text-dim);">
+                  No devices found
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
       </div>
     </div>
 

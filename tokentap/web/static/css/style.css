@@ -403,6 +403,46 @@ header h1 span {
   color: var(--text-dim);
 }
 
+/* Device management (v0.5.0) */
+.device-name {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+  display: inline-block;
+}
+
+.device-name:hover {
+  background-color: var(--surface-hover);
+}
+
+.device-name.has-custom-name {
+  font-weight: 600;
+  color: var(--primary-light);
+}
+
+.inline-edit {
+  width: 100%;
+  max-width: 300px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: inherit;
+}
+
+.inline-edit:focus {
+  outline: none;
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 0.8rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
