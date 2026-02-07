@@ -14,6 +14,9 @@ PROVIDERS = {
     "gemini": {
         "host": "generativelanguage.googleapis.com",
     },
+    "amazon-q": {
+        "host": "q.us-east-1.amazonaws.com",
+    },
 }
 
 # Default token limits

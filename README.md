@@ -152,6 +152,7 @@ Non-LLM traffic (any domain not in the intercept list) passes through the proxy 
 | Anthropic (Claude Code) | `api.anthropic.com` | Supported |
 | OpenAI (Codex) | `api.openai.com` | Supported |
 | Google (Gemini CLI) | `generativelanguage.googleapis.com` | Supported |
+| Amazon Q (Kiro CLI) | `q.*.amazonaws.com` | Supported |
 
 ## Development
 

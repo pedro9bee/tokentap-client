@@ -60,12 +60,46 @@ def _get_gemini_stop_reason(data: dict) -> str | None:
     return None
 
 
+def parse_amazon_q_response(data: dict) -> dict:
+    """Extract token usage from an Amazon Q API response.
+
+    Note: Format is tentative and will be refined once we can intercept actual responses.
+    Amazon Q may use various formats depending on the API endpoint.
+    """
+    # Try common AWS token usage formats
+    usage = data.get("usage", {}) or data.get("tokenUsage", {}) or data.get("usage_metadata", {})
+
+    # Try different field names for tokens
+    input_tokens = (
+        usage.get("inputTokens")
+        or usage.get("input_tokens")
+        or usage.get("promptTokens")
+        or 0
+    )
+    output_tokens = (
+        usage.get("outputTokens")
+        or usage.get("output_tokens")
+        or usage.get("completionTokens")
+        or 0
+    )
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "model": data.get("model", "amazon-q"),
+        "stop_reason": data.get("stopReason") or data.get("stop_reason"),
+    }
+
+
 def parse_response(provider: str, data: dict) -> dict:
     """Parse a response based on provider type."""
     parsers = {
         "anthropic": parse_anthropic_response,
         "openai": parse_openai_response,
         "gemini": parse_gemini_response,
+        "amazon-q": parse_amazon_q_response,
     }
     parser = parsers.get(provider)
     if parser:
@@ -86,6 +120,7 @@ def parse_sse_stream(provider: str, chunks: list[bytes]) -> dict:
     For Anthropic: looks for message_delta event with usage, and message_start for model.
     For OpenAI: looks for final chunk with usage (before [DONE]).
     For Gemini: aggregates from the last chunk (not SSE, just JSON lines).
+    For Amazon Q: similar to OpenAI SSE format.
     """
     result = {
         "input_tokens": 0,
@@ -102,6 +137,8 @@ def parse_sse_stream(provider: str, chunks: list[bytes]) -> dict:
         return _parse_openai_stream(chunks, result)
     elif provider == "gemini":
         return _parse_gemini_stream(chunks, result)
+    elif provider == "amazon-q":
+        return _parse_amazon_q_stream(chunks, result)
     return result
 
 
@@ -195,5 +232,63 @@ def _parse_gemini_stream(chunks: list[bytes], result: dict) -> dict:
 
     if last_valid:
         return parse_gemini_response(last_valid)
+
+    return result
+
+
+def _parse_amazon_q_stream(chunks: list[bytes], result: dict) -> dict:
+    """Parse Amazon Q SSE stream for usage data.
+
+    Note: Format is tentative. Amazon Q may use SSE format similar to OpenAI
+    or a custom AWS event stream format.
+    """
+    full_text = b"".join(chunks).decode("utf-8", errors="replace")
+
+    # Try SSE format (like OpenAI)
+    for line in full_text.split("\n"):
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        json_str = line[6:]
+        if json_str == "[DONE]":
+            continue
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        if data.get("model"):
+            result["model"] = data["model"]
+
+        # Try various usage field formats
+        usage = data.get("usage") or data.get("tokenUsage")
+        if usage:
+            result["input_tokens"] = (
+                usage.get("inputTokens") or usage.get("input_tokens") or usage.get("promptTokens") or result["input_tokens"]
+            )
+            result["output_tokens"] = (
+                usage.get("outputTokens") or usage.get("output_tokens") or usage.get("completionTokens") or result["output_tokens"]
+            )
+
+        # Try to get stop reason
+        stop_reason = data.get("stopReason") or data.get("stop_reason")
+        if stop_reason:
+            result["stop_reason"] = stop_reason
+
+    # If SSE didn't work, try AWS Event Stream format
+    if result["model"] == "unknown":
+        # Try parsing as newline-delimited JSON
+        last_valid = None
+        for line in full_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                last_valid = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        if last_valid:
+            return parse_amazon_q_response(last_valid)
 
     return result

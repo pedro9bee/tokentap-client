@@ -20,6 +20,10 @@ DOMAIN_TO_PROVIDER = {
     "api.anthropic.com": "anthropic",
     "api.openai.com": "openai",
     "generativelanguage.googleapis.com": "gemini",
+    "q.us-east-1.amazonaws.com": "amazon-q",
+    "q.us-west-2.amazonaws.com": "amazon-q",
+    "q.eu-west-1.amazonaws.com": "amazon-q",
+    "q.ap-southeast-1.amazonaws.com": "amazon-q",
 }
 
 
@@ -44,6 +48,7 @@ class TokentapAddon:
 
         # Health check: respond inline when targeting the proxy itself
         if host in ("localhost", "127.0.0.1") and path == "/health":
+            logger.debug("Health check request received")
             status = {"status": "ok", "proxy": True}
             flow.response = http.Response.make(
                 200,
@@ -57,17 +62,27 @@ class TokentapAddon:
         if host in ("localhost", "127.0.0.1"):
             provider = self._detect_provider_from_path(path)
             if provider:
+                logger.info("Backward compat request: %s -> %s", path, provider)
                 upstream = PROVIDERS[provider]["host"]
                 flow.request.host = upstream
                 flow.request.port = 443
                 flow.request.scheme = "https"
             else:
+                logger.warning("Unknown API path: %s", path)
                 flow.response = http.Response.make(
                     400,
                     f"Unknown API path: {path}. Supported: Anthropic, OpenAI, Gemini".encode(),
                     {"Content-Type": "text/plain"},
                 )
                 return
+
+        # Detect provider for MITM interception
+        provider = DOMAIN_TO_PROVIDER.get(host)
+        if provider:
+            logger.info("Intercepting %s request: %s %s", provider, flow.request.method, path)
+        else:
+            # Log all non-LLM requests to help identify new providers (like kiro/AWS)
+            logger.debug("Proxying unknown host: %s %s %s", flow.request.method, host, path)
 
         # Start timer
         self._flow_data[flow.id] = {
@@ -81,17 +96,27 @@ class TokentapAddon:
         if flow.id not in self._flow_data:
             return
 
+        # Only process LLM provider domains
+        host = flow.request.host
+        if host not in DOMAIN_TO_PROVIDER:
+            return
+
         content_type = flow.response.headers.get("content-type", "")
         is_sse = "text/event-stream" in content_type
 
         # Also check if the request asked for streaming
+        is_request_stream = False
         try:
             body = json.loads(flow.request.content)
-            is_request_stream = body.get("stream", False)
+            # Body might be a list or dict, only check if it's a dict
+            if isinstance(body, dict):
+                is_request_stream = body.get("stream", False)
         except (json.JSONDecodeError, ValueError, TypeError):
-            is_request_stream = False
+            pass
 
         if is_sse or is_request_stream:
+            logger.debug("Streaming response detected for %s (SSE: %s, stream param: %s)",
+                        flow.request.host, is_sse, is_request_stream)
             fdata = self._flow_data[flow.id]
             fdata["is_streaming"] = True
 
@@ -117,6 +142,9 @@ class TokentapAddon:
         duration_ms = int((time.monotonic() - fdata["start_time"]) * 1000)
         path = flow.request.path
 
+        logger.debug("Processing %s response: %s (status: %d, duration: %dms)",
+                    provider, path, flow.response.status_code, duration_ms)
+
         # Parse request body
         body_dict = None
         request_parsed = None
@@ -133,6 +161,7 @@ class TokentapAddon:
 
         if is_streaming:
             chunks = fdata["chunks"]
+            logger.debug("Parsing SSE stream (%d chunks)", len(chunks))
             usage = parse_sse_stream(provider, chunks)
             response_data = None
         else:
@@ -140,11 +169,13 @@ class TokentapAddon:
             try:
                 response_data = json.loads(flow.response.content)
             except (json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("Failed to parse JSON response from %s", provider)
                 pass
 
             if response_data:
                 usage = parse_response(provider, response_data)
             else:
+                logger.warning("No response data to parse from %s", provider)
                 usage = {
                     "input_tokens": 0,
                     "output_tokens": 0,
@@ -180,6 +211,16 @@ class TokentapAddon:
             "response_stop_reason": usage.get("stop_reason"),
             "streaming": is_streaming,
         }
+
+        logger.info(
+            "Recorded %s event: model=%s, in=%d, out=%d, cache_read=%d, total=%d tokens",
+            provider,
+            model,
+            event["input_tokens"],
+            event["output_tokens"],
+            event["cache_read_tokens"],
+            event["total_tokens"],
+        )
 
         # Legacy callback for Rich dashboard
         if self.on_request:
@@ -230,6 +271,8 @@ class TokentapAddon:
             return _parse_openai_request(body_dict)
         elif provider == "gemini":
             return _parse_gemini_request(body_dict)
+        elif provider == "amazon-q":
+            return _parse_amazon_q_request(body_dict)
         return None
 
 
@@ -289,6 +332,54 @@ def _parse_gemini_request(body: dict) -> dict:
             system_text = " ".join(text_parts)
             result["messages"].insert(0, {"role": "system", "content": system_text})
             texts.insert(0, system_text)
+
+    result["total_text"] = "\n".join(texts)
+    return result
+
+
+def _parse_amazon_q_request(body: dict) -> dict:
+    """Parse Amazon Q API request body.
+
+    Note: Format is tentative and will be refined once we can intercept actual requests.
+    Amazon Q may use various formats depending on the API endpoint.
+    """
+    result = {
+        "provider": "amazon-q",
+        "messages": [],
+        "model": body.get("model", "amazon-q"),
+        "total_text": "",
+    }
+
+    texts = []
+
+    # Try common AWS formats
+    # Format 1: messages array (similar to OpenAI)
+    if "messages" in body:
+        messages = body.get("messages", [])
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                result["messages"].append({"role": role, "content": content})
+                texts.append(content)
+            elif isinstance(content, list):
+                # Handle structured content
+                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and "text" in p]
+                combined = " ".join(text_parts)
+                result["messages"].append({"role": role, "content": combined})
+                texts.append(combined)
+
+    # Format 2: prompt field (simple format)
+    elif "prompt" in body:
+        prompt = body.get("prompt", "")
+        result["messages"].append({"role": "user", "content": prompt})
+        texts.append(prompt)
+
+    # Format 3: inputText field (another AWS format)
+    elif "inputText" in body:
+        input_text = body.get("inputText", "")
+        result["messages"].append({"role": "user", "content": input_text})
+        texts.append(input_text)
 
     result["total_text"] = "\n".join(texts)
     return result
