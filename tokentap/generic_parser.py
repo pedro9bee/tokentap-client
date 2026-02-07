@@ -44,36 +44,94 @@ class GenericParser:
             "total_text": "",
             "system": None,
             "is_streaming": False,
+            # NEW in v0.4.1: Additional fields for complete capture
+            "tools": None,
+            "thinking": None,
+            "metadata": None,
         }
 
-        # Extract messages
+        # Extract messages (should return array when [*] is used)
         if req_config.messages_path:
             messages = self.config.extract_field(body, req_config.messages_path)
             if messages:
                 result["messages"] = messages if isinstance(messages, list) else [messages]
 
-        # Extract system prompt
+        # Extract system prompt (can be string or array)
         if req_config.system_path:
-            result["system"] = self.config.extract_field(body, req_config.system_path)
+            system = self.config.extract_field(body, req_config.system_path)
+            # Keep as-is - can be string, array, or dict
+            result["system"] = system
 
         # Extract streaming flag
         if req_config.stream_param_path:
             result["is_streaming"] = bool(self.config.extract_field(body, req_config.stream_param_path, False))
 
-        # Extract text for token counting
+        # NEW: Extract tools array (keep as-is from API)
+        if req_config.tools_path:
+            tools = self.config.extract_field(body, req_config.tools_path)
+            # Keep original format - usually already an array
+            if tools:
+                result["tools"] = tools
+
+        # NEW: Extract thinking config
+        if req_config.thinking_path:
+            result["thinking"] = self.config.extract_field(body, req_config.thinking_path)
+
+        # NEW: Extract metadata
+        if req_config.metadata_path:
+            result["metadata"] = self.config.extract_field(body, req_config.metadata_path)
+
+        # Extract text for token counting (with improved nested extraction)
         text_parts = []
         for text_path in req_config.text_fields:
             value = self.config.extract_field(body, text_path)
             if value:
                 if isinstance(value, list):
-                    text_parts.extend(str(v) for v in value if v)
+                    # Handle nested lists (like messages array)
+                    for item in value:
+                        if isinstance(item, dict):
+                            # Extract text from structured content
+                            text_parts.append(self._extract_text_from_object(item))
+                        else:
+                            text_parts.append(str(item))
                 else:
                     text_parts.append(str(value))
 
-        result["total_text"] = "\n".join(text_parts)
+        result["total_text"] = "\n".join(filter(None, text_parts))
 
         logger.debug(f"Parsed {provider_name} request: model={result['model']}, messages={len(result['messages'])}")
         return result
+
+    def _extract_text_from_object(self, obj: dict) -> str:
+        """Recursively extract text content from nested objects.
+
+        Args:
+            obj: Dictionary object to extract text from
+
+        Returns:
+            Concatenated text content
+        """
+        texts = []
+
+        # Direct text field
+        if "text" in obj:
+            texts.append(str(obj["text"]))
+
+        # Content field (can be string or nested)
+        if "content" in obj:
+            content = obj["content"]
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        texts.append(self._extract_text_from_object(item))
+                    else:
+                        texts.append(str(item))
+            elif isinstance(content, dict):
+                texts.append(self._extract_text_from_object(content))
+
+        return " ".join(filter(None, texts))
 
     def parse_response(self, provider_name: str, response_data: dict | list[bytes], is_streaming: bool = False) -> dict:
         """Extract tokens from response using provider config.

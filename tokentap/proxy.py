@@ -214,10 +214,19 @@ class TokentapAddon:
             pass
 
         if body_dict:
-            # NEW: Try generic parser first
+            # Try generic parser first
             if self.generic_parser:
                 try:
                     request_parsed = self.generic_parser.parse_request(provider_name, body_dict)
+
+                    # NEW v0.4.1: Validate quality of parsed data
+                    if not self._is_parse_quality_acceptable(request_parsed, body_dict):
+                        logger.warning(
+                            f"Generic parser returned incomplete data for {provider_name}, "
+                            f"falling back to legacy parser"
+                        )
+                        request_parsed = self._parse_request_body(body_dict, provider)
+
                 except Exception as e:
                     logger.warning(f"Generic parser failed for {provider_name}: {e}")
                     request_parsed = self._parse_request_body(body_dict, provider)
@@ -358,6 +367,17 @@ class TokentapAddon:
             "capture_mode": "capture_all" if provider_name == "unknown" else "known",
         }
 
+        # NEW v0.4.1: Add additional request fields if present (system, tools, thinking, metadata)
+        if request_parsed:
+            if "system" in request_parsed and request_parsed["system"]:
+                event["system"] = request_parsed["system"]
+            if "tools" in request_parsed and request_parsed["tools"]:
+                event["tools"] = request_parsed["tools"]
+            if "thinking" in request_parsed and request_parsed["thinking"]:
+                event["thinking"] = request_parsed["thinking"]
+            if "metadata" in request_parsed and request_parsed["metadata"]:
+                event["request_metadata"] = request_parsed["metadata"]  # Renamed to avoid collision
+
         logger.info(
             "Recorded %s event: client=%s, model=%s, in=%d, out=%d, cache_read=%d, total=%d tokens",
             provider,
@@ -386,19 +406,21 @@ class TokentapAddon:
         if self.db:
             db_event = {**event}
 
-            # NEW: Capture full raw data for unknown providers or if configured
-            should_capture_full = (
+            # ALWAYS capture full raw request to prevent data loss (v0.4.1 fix)
+            # This ensures we can reprocess if parsing improves later
+            if body_dict:
+                db_event["raw_request"] = body_dict
+
+            # Capture full response for unknown providers or if configured
+            should_capture_response = (
                 provider_name == "unknown"
-                or (provider_info and provider_info.get("capture_full_request"))
+                or (provider_info and provider_info.get("capture_full_response"))
                 or (self.provider_config and self.provider_config.capture_mode == "capture_all")
             )
 
-            if should_capture_full:
-                if body_dict:
-                    db_event["raw_request"] = body_dict
-                if response_data:
-                    db_event["raw_response"] = response_data
-                logger.debug(f"Captured full request/response for {provider_name}")
+            if should_capture_response and response_data:
+                db_event["raw_response"] = response_data
+                logger.debug(f"Captured full response for {provider_name}")
 
             try:
                 await self.db.insert_event(db_event)
@@ -449,6 +471,44 @@ class TokentapAddon:
             context["program_name"] = TokentapAddon._detect_client_type(ua, flow.request.host, "")
 
         return context
+
+    @staticmethod
+    def _is_parse_quality_acceptable(parsed: dict, original: dict) -> bool:
+        """Check if parsed data quality is acceptable.
+
+        Returns False if significant data loss is detected.
+
+        Args:
+            parsed: Parsed request data from generic parser
+            original: Original request body
+
+        Returns:
+            True if quality is acceptable, False if fallback recommended
+        """
+        # Check if messages array is suspiciously small
+        original_messages = original.get("messages", [])
+        parsed_messages = parsed.get("messages", [])
+
+        if len(original_messages) > 1 and len(parsed_messages) == 1:
+            logger.debug(
+                f"Quality check failed: {len(original_messages)} messages in original, "
+                f"only {len(parsed_messages)} in parsed"
+            )
+            return False
+
+        # Check if system prompt exists but wasn't captured
+        if "system" in original and original["system"]:
+            if not parsed.get("system"):
+                logger.debug("Quality check failed: system prompt not captured")
+                return False
+
+        # Check if tools array exists but wasn't captured
+        if "tools" in original and original["tools"]:
+            if not parsed.get("tools"):
+                logger.debug("Quality check failed: tools array not captured")
+                return False
+
+        return True
 
     @staticmethod
     def _detect_client_type(user_agent: str, host: str, provider: str) -> str:

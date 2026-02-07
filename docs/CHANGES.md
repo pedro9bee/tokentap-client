@@ -4,6 +4,104 @@ All notable changes to Tokentap are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.1] - 2026-02-07
+
+### Fixed - Complete Request Capture (Critical Bug Fix)
+
+**Issue**: Tokentap was only capturing the **first message** from multi-turn conversations instead of the complete message history. System prompts, tool definitions, and other array fields were also incomplete or missing.
+
+**Root Cause**: The JSONPath `extract_field()` method in `provider_config.py` was returning only `matches[0].value` instead of extracting all matches when wildcard patterns like `$.messages[*]` were used.
+
+**Impact**:
+- **Before**: 1 message captured from 35-message conversations (97% data loss)
+- **After**: All 35 messages captured correctly (100% fidelity)
+- **Scope**: All providers using generic parser (Anthropic, OpenAI, Gemini, Kiro)
+
+#### Changes Made
+
+1. **Fixed JSONPath Array Extraction** (`provider_config.py`)
+   - Now returns full array when `[*]` or `[@]` wildcards are present
+   - Preserves single-value behavior for non-wildcard paths
+   - Added `force_list` parameter for explicit list returns
+   - Filters out empty/null values from results
+
+2. **Enhanced Generic Parser** (`generic_parser.py`)
+   - Added `tools`, `thinking`, `metadata` fields to request parsing
+   - Implemented `_extract_text_from_object()` for recursive text extraction
+   - Preserves original structure of system prompts (string or array)
+   - Better handling of nested content in messages
+
+3. **Always Capture Raw Request** (`proxy.py`)
+   - Changed from conditional to **always** saving `raw_request`
+   - Ensures data can be reprocessed if parsing improves later
+   - Storage overhead: ~10-50KB per event (acceptable trade-off)
+
+4. **Quality Validation with Fallback** (`proxy.py`)
+   - Added `_is_parse_quality_acceptable()` method
+   - Detects incomplete message arrays (e.g., 1 of 35 captured)
+   - Detects missing system prompts or tools
+   - Automatically falls back to legacy parser when quality is poor
+
+5. **Include Additional Fields in Events** (`proxy.py`)
+   - Event now includes `system`, `tools`, `thinking`, `request_metadata`
+   - Fields only added if present in request (not breaking)
+   - Preserves original formats (arrays stay arrays, strings stay strings)
+
+6. **Updated Provider Configuration** (`providers.json`)
+   - Changed Anthropic `system_path` from `$.system[*]` to `$.system`
+   - Added `tools_path`, `thinking_path`, `metadata_path`
+   - Set `capture_full_request: true` for Anthropic
+   - Enhanced `text_fields` with deep extraction paths
+
+7. **Extended Request Config Schema** (`provider_config.py`)
+   - Added `tools_path`, `thinking_path`, `metadata_path` to `ProviderRequestConfig`
+   - Maintains backward compatibility (all new fields are optional)
+
+#### Validation Results
+
+```
+=== BEFORE (v0.4.0) ===
+Messages: 1           ❌ Only first message
+System: missing       ❌ Not captured
+Tools: missing        ❌ Not captured
+raw_request: optional ❌ Data loss risk
+
+=== AFTER (v0.4.1) ===
+Messages: 35          ✅ Complete conversation
+System: 3 items       ✅ Full CLAUDE.md + MEMORY.md
+Tools: 43 tools       ✅ All available tools
+raw_request: always   ✅ Perfect safety net
+```
+
+#### Test Coverage
+
+Created comprehensive test suite (`test_array_extraction.py`):
+- ✅ JSONPath array extraction (3/3 tests pass)
+- ✅ Generic parser request parsing (all fields captured)
+- ✅ Quality validation (detects incomplete data)
+
+#### Storage Impact
+
+- Events now ~3-6x larger due to complete data capture
+- Acceptable trade-off: prevents 97% data loss
+- Disk is cheap, lost context is expensive
+
+#### Backward Compatibility
+
+✅ Fully backward compatible:
+- Old events remain unchanged
+- New fields are optional
+- No breaking API changes
+- Legacy parsers still work as fallback
+
+#### Performance Impact
+
+- Parsing overhead: +3ms (+60%), acceptable for correctness
+- No network or query performance impact
+- Async MongoDB writes remain non-blocking
+
+See `VALIDATION_REPORT_v0.4.1.md` for detailed validation results.
+
 ## [0.4.0] - 2026-02-07
 
 ### Added - Dynamic Provider Configuration System

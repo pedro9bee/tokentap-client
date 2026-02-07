@@ -19,6 +19,10 @@ class ProviderRequestConfig(BaseModel):
     system_path: str | None = None
     stream_param_path: str | None = None
     text_fields: list[str] = Field(default_factory=list)
+    # NEW in v0.4.1: Additional fields for complete request capture
+    tools_path: str | None = None
+    thinking_path: str | None = None
+    metadata_path: str | None = None
 
 
 class ProviderResponseJsonConfig(BaseModel):
@@ -188,16 +192,19 @@ class ProviderConfig:
         logger.debug(f"No provider config found for domain: {domain}")
         return None
 
-    def extract_field(self, data: dict, jsonpath: str, default: Any = None) -> Any:
+    def extract_field(self, data: dict, jsonpath: str, default: Any = None, force_list: bool = False) -> Any:
         """Extract field using JSONPath syntax.
 
         Args:
             data: The JSON data to extract from
-            jsonpath: JSONPath expression (e.g., "$.usage.input_tokens")
+            jsonpath: JSONPath expression (e.g., "$.usage.input_tokens" or "$.messages[*]")
             default: Default value if field not found
+            force_list: If True, always return a list (even for single matches)
 
         Returns:
-            Extracted value or default
+            - List of values if jsonpath contains wildcard [*] or [@], or force_list=True
+            - Single value otherwise
+            - default if no matches found
         """
         if not jsonpath or not data:
             return default
@@ -213,12 +220,31 @@ class ProviderConfig:
         parser = self._jsonpath_cache[jsonpath]
         try:
             matches = parser.find(data)
-            if matches:
-                value = matches[0].value
-                # Return None as default for empty strings
-                if value == "" or value is None:
-                    return default
-                return value
+            if not matches:
+                return default
+
+            # Extract values from all matches
+            values = []
+            for match in matches:
+                value = match.value
+                # Convert DatumInContext to actual value if needed
+                if hasattr(value, 'value'):
+                    value = value.value
+                # Skip empty values
+                if value != "" and value is not None:
+                    values.append(value)
+
+            if not values:
+                return default
+
+            # Determine if we should return a list or single value
+            is_array_query = '[*]' in jsonpath or '[@]' in jsonpath or force_list
+
+            if is_array_query:
+                return values  # Return full list
+            else:
+                return values[0]  # Return single value
+
         except Exception as e:
             logger.debug(f"JSONPath extraction failed for '{jsonpath}': {e}")
 
