@@ -46,5 +46,11 @@ const API = {
 
   async getHealth() {
     return this.fetchJSON('/api/health');
+  },
+
+  async deleteAllEvents() {
+    const resp = await fetch('/api/events/all', { method: 'DELETE' });
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+    return resp.json();
   }
 };

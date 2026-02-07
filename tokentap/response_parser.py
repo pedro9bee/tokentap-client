@@ -88,7 +88,7 @@ def parse_amazon_q_response(data: dict) -> dict:
         "output_tokens": output_tokens,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
-        "model": data.get("model", "amazon-q"),
+        "model": data.get("model", "kiro"),
         "stop_reason": data.get("stopReason") or data.get("stop_reason"),
     }
 
@@ -99,7 +99,7 @@ def parse_response(provider: str, data: dict) -> dict:
         "anthropic": parse_anthropic_response,
         "openai": parse_openai_response,
         "gemini": parse_gemini_response,
-        "amazon-q": parse_amazon_q_response,
+        "kiro": parse_amazon_q_response,
     }
     parser = parsers.get(provider)
     if parser:
@@ -137,7 +137,7 @@ def parse_sse_stream(provider: str, chunks: list[bytes]) -> dict:
         return _parse_openai_stream(chunks, result)
     elif provider == "gemini":
         return _parse_gemini_stream(chunks, result)
-    elif provider == "amazon-q":
+    elif provider == "kiro":
         return _parse_amazon_q_stream(chunks, result)
     return result
 

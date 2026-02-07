@@ -20,10 +20,10 @@ DOMAIN_TO_PROVIDER = {
     "api.anthropic.com": "anthropic",
     "api.openai.com": "openai",
     "generativelanguage.googleapis.com": "gemini",
-    "q.us-east-1.amazonaws.com": "amazon-q",
-    "q.us-west-2.amazonaws.com": "amazon-q",
-    "q.eu-west-1.amazonaws.com": "amazon-q",
-    "q.ap-southeast-1.amazonaws.com": "amazon-q",
+    "q.us-east-1.amazonaws.com": "kiro",
+    "q.us-west-2.amazonaws.com": "kiro",
+    "q.eu-west-1.amazonaws.com": "kiro",
+    "q.ap-southeast-1.amazonaws.com": "kiro",
 }
 
 
@@ -79,7 +79,10 @@ class TokentapAddon:
         # Detect provider for MITM interception
         provider = DOMAIN_TO_PROVIDER.get(host)
         if provider:
-            logger.info("Intercepting %s request: %s %s", provider, flow.request.method, path)
+            logger.info("Intercepting %s request: %s %s %s", provider, flow.request.method, host, path)
+            # DEBUG: Log headers for kiro
+            if provider == "kiro":
+                logger.debug("KIRO Request Headers: %s", dict(flow.request.headers))
         else:
             # Log all non-LLM requests to help identify new providers (like kiro/AWS)
             logger.debug("Proxying unknown host: %s %s %s", flow.request.method, host, path)
@@ -103,6 +106,7 @@ class TokentapAddon:
 
         content_type = flow.response.headers.get("content-type", "")
         is_sse = "text/event-stream" in content_type
+        is_eventstream = "application/vnd.amazon.eventstream" in content_type
 
         # Also check if the request asked for streaming
         is_request_stream = False
@@ -114,11 +118,12 @@ class TokentapAddon:
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-        if is_sse or is_request_stream:
-            logger.debug("Streaming response detected for %s (SSE: %s, stream param: %s)",
-                        flow.request.host, is_sse, is_request_stream)
+        if is_sse or is_request_stream or is_eventstream:
+            logger.debug("Streaming response detected for %s (SSE: %s, EventStream: %s, stream param: %s)",
+                        flow.request.host, is_sse, is_eventstream, is_request_stream)
             fdata = self._flow_data[flow.id]
             fdata["is_streaming"] = True
+            fdata["stream_type"] = "eventstream" if is_eventstream else "sse"
 
             # Use a stream function that captures chunks while forwarding them
             def stream_chunks(data: bytes) -> bytes:
@@ -142,6 +147,18 @@ class TokentapAddon:
         duration_ms = int((time.monotonic() - fdata["start_time"]) * 1000)
         path = flow.request.path
 
+        # Filter out telemetry requests by header (Kiro-specific)
+        if provider == "kiro":
+            x_amz_target = flow.request.headers.get("x-amz-target", "")
+            if "SendTelemetryEvent" in x_amz_target or "SendTelemetry" in x_amz_target:
+                logger.debug("Skipping Kiro telemetry request: %s", x_amz_target)
+                return
+
+        # Filter out telemetry/metrics requests by path
+        if any(keyword in path.lower() for keyword in ['/telemetry', '/metrics', '/clienttelemetry']):
+            logger.debug("Skipping telemetry request: %s %s", provider, path)
+            return
+
         logger.debug("Processing %s response: %s (status: %d, duration: %dms)",
                     provider, path, flow.response.status_code, duration_ms)
 
@@ -150,7 +167,12 @@ class TokentapAddon:
         request_parsed = None
         try:
             body_dict = json.loads(flow.request.content)
+            # DEBUG: Log full request for kiro to understand the format
+            if provider == "kiro":
+                logger.info("KIRO RAW REQUEST: %s", json.dumps(body_dict, indent=2))
         except (json.JSONDecodeError, ValueError, TypeError):
+            if provider == "kiro":
+                logger.info("KIRO RAW REQUEST (not JSON): %s", flow.request.content[:500])
             pass
 
         if body_dict:
@@ -161,15 +183,49 @@ class TokentapAddon:
 
         if is_streaming:
             chunks = fdata["chunks"]
-            logger.debug("Parsing SSE stream (%d chunks)", len(chunks))
-            usage = parse_sse_stream(provider, chunks)
-            response_data = None
+            stream_type = fdata.get("stream_type", "sse")
+            logger.debug("Parsing %s stream (%d chunks)", stream_type, len(chunks))
+
+            if stream_type == "eventstream" and provider == "kiro":
+                # Amazon EventStream format - log full content for analysis
+                full_content = b"".join(chunks)
+                logger.info("KIRO EventStream full content (%d bytes): %s",
+                           len(full_content),
+                           full_content[:2000].decode('utf-8', errors='replace'))
+                # Try to parse as eventstream (for now, no tokens extracted)
+                usage = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "model": "kiro",
+                    "stop_reason": None,
+                }
+                response_data = None
+            else:
+                usage = parse_sse_stream(provider, chunks)
+                response_data = None
         else:
             response_data = None
+            # DEBUG: Log response details for kiro BEFORE parsing
+            if provider == "kiro":
+                logger.info("KIRO Response: status=%d, content-length=%d, content-type=%s",
+                           flow.response.status_code,
+                           len(flow.response.content),
+                           flow.response.headers.get("content-type", "unknown"))
+                logger.debug("KIRO Response Headers: %s", dict(flow.response.headers))
+
             try:
                 response_data = json.loads(flow.response.content)
+                # DEBUG: Log full response for kiro to understand the format
+                if provider == "kiro":
+                    logger.info("KIRO RAW RESPONSE (JSON): %s", json.dumps(response_data, indent=2))
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.warning("Failed to parse JSON response from %s", provider)
+                # DEBUG: Log raw content if JSON parsing fails
+                if provider == "kiro":
+                    raw_preview = flow.response.content[:1000].decode('utf-8', errors='replace')
+                    logger.info("KIRO RAW CONTENT (not JSON, first 1000 bytes): %s", raw_preview)
                 pass
 
             if response_data:
@@ -194,12 +250,19 @@ class TokentapAddon:
         if model == "unknown" and request_parsed:
             model = request_parsed.get("model", "unknown")
 
+        # Capture User-Agent to differentiate clients (Kiro IDE vs Kiro CLI, etc.)
+        user_agent = flow.request.headers.get("user-agent", "unknown")
+        client_type = self._detect_client_type(user_agent, host, provider)
+
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
             "provider": provider,
+            "host": host,
             "model": model,
             "path": path,
+            "user_agent": user_agent,
+            "client_type": client_type,
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
@@ -213,8 +276,9 @@ class TokentapAddon:
         }
 
         logger.info(
-            "Recorded %s event: model=%s, in=%d, out=%d, cache_read=%d, total=%d tokens",
+            "Recorded %s event: client=%s, model=%s, in=%d, out=%d, cache_read=%d, total=%d tokens",
             provider,
+            client_type,
             model,
             event["input_tokens"],
             event["output_tokens"],
@@ -252,6 +316,41 @@ class TokentapAddon:
     # -------------------------------------------------------------------------
 
     @staticmethod
+    def _detect_client_type(user_agent: str, host: str, provider: str) -> str:
+        """Detect client type from User-Agent and other context.
+
+        Returns:
+            - "kiro-cli" for Kiro CLI
+            - "kiro-ide" for Kiro IDE
+            - "claude-code" for Claude Code CLI
+            - "unknown" for others
+        """
+        ua_lower = user_agent.lower()
+
+        # Kiro detection (Amazon Q based)
+        if "kiro" in ua_lower:
+            if "cli" in ua_lower or "command" in ua_lower:
+                return "kiro-cli"
+            elif "ide" in ua_lower or "editor" in ua_lower or "vscode" in ua_lower:
+                return "kiro-ide"
+            else:
+                return "kiro-cli"  # Default to CLI if ambiguous
+
+        # Claude Code detection
+        if "claude" in ua_lower and "code" in ua_lower:
+            return "claude-code"
+
+        # If it's Amazon Q domain but not Kiro user-agent, assume CLI
+        if provider == "kiro" or "amazonaws.com" in host:
+            return "kiro-cli"  # Default assumption
+
+        # Anthropic direct
+        if provider == "anthropic":
+            return "claude-code"
+
+        return "unknown"
+
+    @staticmethod
     def _detect_provider_from_path(path: str) -> str | None:
         """Detect provider from the request path (backward compat)."""
         if "/v1/messages" in path:
@@ -271,7 +370,7 @@ class TokentapAddon:
             return _parse_openai_request(body_dict)
         elif provider == "gemini":
             return _parse_gemini_request(body_dict)
-        elif provider == "amazon-q":
+        elif provider == "kiro":
             return _parse_amazon_q_request(body_dict)
         return None
 
@@ -344,9 +443,9 @@ def _parse_amazon_q_request(body: dict) -> dict:
     Amazon Q may use various formats depending on the API endpoint.
     """
     result = {
-        "provider": "amazon-q",
+        "provider": "kiro",
         "messages": [],
-        "model": body.get("model", "amazon-q"),
+        "model": body.get("model", "kiro"),
         "total_text": "",
     }
 

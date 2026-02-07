@@ -134,7 +134,15 @@ def up(do_build):
         cmd.append("--build")
 
     console.print("[cyan]Starting tokentap services...[/cyan]")
-    result = subprocess.run(cmd)
+
+    # Remove proxy env vars temporarily so Docker can pull images
+    env = os.environ.copy()
+    env.pop("HTTPS_PROXY", None)
+    env.pop("HTTP_PROXY", None)
+    env.pop("https_proxy", None)
+    env.pop("http_proxy", None)
+
+    result = subprocess.run(cmd, env=env)
     if result.returncode == 0:
         # Copy mitmproxy CA cert from the proxy container to host
         MITMPROXY_CA_DIR.mkdir(parents=True, exist_ok=True)

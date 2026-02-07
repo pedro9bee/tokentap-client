@@ -170,6 +170,15 @@ class MongoEventStore:
             })
         return results
 
+    async def delete_all_events(self) -> int:
+        """Delete all events. Returns count of deleted documents."""
+        try:
+            result = await self.collection.delete_many({})
+            return result.deleted_count
+        except Exception:
+            logger.exception("Failed to delete all events")
+            return 0
+
     async def health_check(self) -> bool:
         """Check if MongoDB is reachable."""
         try:

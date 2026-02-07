@@ -14,7 +14,7 @@ PROVIDERS = {
     "gemini": {
         "host": "generativelanguage.googleapis.com",
     },
-    "amazon-q": {
+    "kiro": {
         "host": "q.us-east-1.amazonaws.com",
     },
 }

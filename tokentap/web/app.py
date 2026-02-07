@@ -55,6 +55,13 @@ async def get_event(event_id: str):
     return event
 
 
+@app.delete("/api/events/all")
+async def delete_all_events():
+    """Delete all events from the database."""
+    deleted_count = await db.delete_all_events()
+    return {"deleted_count": deleted_count, "status": "ok"}
+
+
 @app.get("/api/stats/summary")
 async def stats_summary(
     provider: Optional[str] = Query(None),

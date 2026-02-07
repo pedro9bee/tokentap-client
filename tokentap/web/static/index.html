@@ -40,6 +40,7 @@
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
+          <option value="kiro">Kiro</option>
         </select>
       </div>
       <div class="filter-group">
@@ -56,6 +57,7 @@
       </div>
       <button class="btn btn-primary" @click="applyFilters()">Apply</button>
       <button class="btn" @click="clearFilters()">Clear</button>
+      <button class="btn btn-danger" @click="deleteAllEvents()" style="margin-left: auto;">Delete All Logs</button>
     </div>
 
     <!-- ===== OVERVIEW TAB ===== -->
@@ -140,6 +142,8 @@
             <tr>
               <th>Time</th>
               <th>Provider</th>
+              <th>Client</th>
+              <th>Host</th>
               <th>Model</th>
               <th>Input</th>
               <th>Output</th>
@@ -152,6 +156,8 @@
               <tr class="clickable" @click="showEventDetail(ev._id)">
                 <td x-text="formatTime(ev.timestamp)"></td>
                 <td><span class="badge" :class="ev.provider" x-text="ev.provider"></span></td>
+                <td><span class="client-badge" :class="ev.client_type" x-text="formatClient(ev.client_type)"></span></td>
+                <td><span class="host-badge" x-text="shortHost(ev.host)"></span></td>
                 <td x-text="shortModel(ev.model)"></td>
                 <td x-text="formatNumber(ev.input_tokens)"></td>
                 <td x-text="formatNumber(ev.output_tokens)"></td>
@@ -160,7 +166,7 @@
               </tr>
             </template>
             <template x-if="events.length === 0">
-              <tr><td colspan="7" style="text-align:center;color:var(--text-dim);">No events yet</td></tr>
+              <tr><td colspan="9" style="text-align:center;color:var(--text-dim);">No events yet</td></tr>
             </template>
           </tbody>
         </table>
@@ -193,8 +199,20 @@
                 <div class="value" x-text="selectedEvent.provider"></div>
               </div>
               <div class="detail-item">
+                <div class="label">Client</div>
+                <div class="value" x-text="formatClient(selectedEvent.client_type)"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Host</div>
+                <div class="value" x-text="selectedEvent.host"></div>
+              </div>
+              <div class="detail-item">
                 <div class="label">Model</div>
                 <div class="value" x-text="selectedEvent.model"></div>
+              </div>
+              <div class="detail-item">
+                <div class="label">User-Agent</div>
+                <div class="value" style="font-size: 0.75rem; word-break: break-all;" x-text="selectedEvent.user_agent || 'unknown'"></div>
               </div>
               <div class="detail-item">
                 <div class="label">Duration</div>

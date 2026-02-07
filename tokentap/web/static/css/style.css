@@ -128,6 +128,8 @@ header h1 span {
 .btn:hover { background: var(--surface-hover); }
 .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-light); }
+.btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
+.btn-danger:hover { background: #dc2626; }
 
 /* Stats cards */
 .stats-grid {
@@ -365,6 +367,41 @@ header h1 span {
 .badge.anthropic { background: rgba(99, 102, 241, 0.2); color: var(--primary-light); }
 .badge.openai { background: rgba(34, 197, 94, 0.2); color: var(--green); }
 .badge.gemini { background: rgba(245, 158, 11, 0.2); color: var(--accent); }
+.badge.kiro { background: rgba(236, 72, 153, 0.2); color: #ec4899; }
+
+.host-badge {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-family: monospace;
+}
+
+.client-badge {
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.client-badge.kiro-cli {
+  background: rgba(139, 92, 246, 0.2);
+  color: #a78bfa;
+}
+
+.client-badge.kiro-ide {
+  background: rgba(236, 72, 153, 0.2);
+  color: #ec4899;
+}
+
+.client-badge.claude-code {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--primary-light);
+}
+
+.client-badge.unknown {
+  background: rgba(100, 116, 139, 0.2);
+  color: var(--text-dim);
+}
 
 /* Responsive */
 @media (max-width: 768px) {

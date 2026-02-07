@@ -133,6 +133,21 @@ document.addEventListener('alpine:init', () => {
       await this.loadOverTime();
     },
 
+    async deleteAllEvents() {
+      if (!confirm('Are you sure you want to delete ALL events? This cannot be undone!')) {
+        return;
+      }
+      this.loading = true;
+      try {
+        const result = await API.deleteAllEvents();
+        alert(`Deleted ${result.deleted_count} events`);
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message;
+        this.loading = false;
+      }
+    },
+
     formatNumber(n) {
       if (n === null || n === undefined) return '0';
       return Number(n).toLocaleString();
@@ -149,6 +164,28 @@ document.addEventListener('alpine:init', () => {
       // Shorten long model names
       if (model.length > 30) return model.substring(0, 27) + '...';
       return model;
+    },
+
+    shortHost(host) {
+      if (!host) return 'unknown';
+      // Remove subdomains and show only main domain
+      // e.g., "api.anthropic.com" -> "anthropic.com"
+      const parts = host.split('.');
+      if (parts.length >= 2) {
+        return parts.slice(-2).join('.');
+      }
+      return host;
+    },
+
+    formatClient(client) {
+      if (!client || client === 'unknown') return 'unknown';
+      // Format client type for display
+      const map = {
+        'kiro-cli': 'Kiro CLI',
+        'kiro-ide': 'Kiro IDE',
+        'claude-code': 'Claude Code',
+      };
+      return map[client] || client;
     },
   }));
 });
